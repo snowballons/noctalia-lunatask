@@ -1,6 +1,6 @@
--- service.luau (M1: registry owner + command protocol + ping)
--- Owns: token resolution (D3), registry.json (D2/D8), FIFO request queue (D9),
--- GET /v1/ping. M2+ adds task/note/journal ops onto handleOp.
+-- service.luau (M4: registry owner + command protocol + tasks + notes)
+-- Owns: token resolution (D3), registry.json (D2/D8), FIFO request queue (D9).
+-- M5 adds journal.create. M6 adds the launcher provider.
 local api = require("./lib/api.luau")
 local registry = require("./lib/registry.luau")
 local ids = require("./lib/ids.luau")
@@ -454,6 +454,339 @@ local function taskDelete(args, done)
 	end)
 end
 
+-- Note operations (M4). Same idempotency shape as tasks: source/source_id,
+-- 204 → lookup recovery, 404-on-delete counts as success.
+
+-- Resolve a notebook display name to its UUID. Nil/empty means "omit
+-- notebook_id" (note lands unfiled, V-08). Falls back to default_notebook.
+-- The sentinel false forces omission even when a default is configured
+-- (used by the panel's explicit "Unfiled" choice on create).
+local function resolveNotebook(name)
+	if name == false then
+		return nil, true
+	end
+	if name == nil or name == "" then
+		name = noctalia.getConfig("default_notebook")
+	end
+	if name == nil or name == "" then
+		return nil, true
+	end
+	local books = noctalia.getConfig("notebooks")
+	local id = (type(books) == "table") and books[name] or nil
+	if type(id) == "string" then
+		id = noctalia.string.trim(id)
+	end
+	if id == "" then
+		return nil, true
+	end
+	if not ids.isUuid(id) then
+		return nil, false
+	end
+	return id, true
+end
+
+local function adoptNote(item, id)
+	item.id = id
+	item.state = "synced"
+	item.last_error = nil
+	item.updated_at = ids.utcNow()
+	registry.save(reg)
+	publishRegistry()
+end
+
+local function failNote(item, err, done)
+	item.state = "failed"
+	item.last_error = err and err.kind or "server"
+	item.updated_at = ids.utcNow()
+	registry.save(reg)
+	publishRegistry()
+	done({ ok = false, err = err })
+end
+
+local function recoverNote(token, sourceTag, sourceId, item, fallbackErr, done)
+	api.listNotesBySource(token, sourceTag, sourceId, function(l)
+		local n = l.ok and l.notes and l.notes[1]
+		if n and n.id then
+			adoptNote(item, n.id)
+			done({ ok = true })
+		else
+			failNote(item, fallbackErr or { kind = "server", status = 0, message = "unknown outcome" }, done)
+		end
+	end)
+end
+
+local function finishPostNote(token, sourceTag, sourceId, item, r, done)
+	if r.ok and r.data and r.data.note and r.data.note.id then
+		adoptNote(item, r.data.note.id)
+		done({ ok = true })
+	elseif r.ok then
+		recoverNote(token, sourceTag, sourceId, item, nil, done)
+	else
+		local kind = r.err and r.err.kind
+		if kind == "server" or kind == "network" or kind == "timeout" then
+			recoverNote(token, sourceTag, sourceId, item, r.err, done)
+		else
+			failNote(item, r.err, done)
+		end
+	end
+end
+
+local function postNote(token, sourceTag, sourceId, fields, item, done)
+	local payload = {
+		name = fields.title,
+		source = sourceTag,
+		source_id = sourceId,
+	}
+	if fields.notebook_id then
+		payload.notebook_id = fields.notebook_id
+	end
+	if fields.content then
+		payload.content = fields.content
+	end
+	if fields.date_on then
+		payload.date_on = fields.date_on
+	end
+	api.request(token, "POST", "/notes", payload, function(r)
+		finishPostNote(token, sourceTag, sourceId, item, r, done)
+	end)
+end
+
+local function noteCreate(args, done)
+	args = args or {}
+	local title = args.title and noctalia.string.trim(tostring(args.title)) or ""
+	if title == "" then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "title required" } })
+		return
+	end
+	local notebookId, notebookOk = resolveNotebook(args.notebook)
+	if not notebookOk then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "unknown notebook" } })
+		return
+	end
+	local dateOn = args.date_on
+	if dateOn == nil or dateOn == "" then
+		dateOn = nil
+	elseif not ids.isDate(dateOn) then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "bad date" } })
+		return
+	end
+	local content = args.content and noctalia.string.trim(tostring(args.content)) or nil
+	if content == "" then
+		content = nil
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local sourceTag = noctalia.getConfig("source_tag")
+	if type(sourceTag) ~= "string" or sourceTag == "" then
+		sourceTag = "noctalia"
+	end
+	local cacheBodies = noctalia.getConfig("cache_bodies") == true
+	local sourceId = ids.newSourceId()
+	local now = ids.utcNow()
+	local item = {
+		kind = "note",
+		id = nil,
+		source_id = sourceId,
+		state = "pending_create",
+		title = title,
+		notebook_id = notebookId,
+		notebook_name = (args.notebook ~= nil and args.notebook ~= "") and args.notebook or nil,
+		date_on = dateOn,
+		body = (cacheBodies and content) or nil,
+		created_at = now,
+		updated_at = now,
+		last_error = nil,
+	}
+	registry.add(reg, item)
+	registry.save(reg)
+	publishRegistry()
+	postNote(token, sourceTag, sourceId, {
+		title = title,
+		notebook_id = notebookId,
+		content = content,
+		date_on = dateOn,
+	}, item, done)
+end
+
+local function findNote(key)
+	if type(key) ~= "string" or key == "" then
+		return nil
+	end
+	return registry.findById(reg, key) or registry.findBySourceId(reg, key)
+end
+
+local function noteRetry(args, done)
+	local item = findNote(args and args.id)
+	if not item or item.kind ~= "note" then
+		done({ ok = false, err = { kind = "not_found", status = 0, message = "unknown id" } })
+		return
+	end
+	if item.state ~= "failed" then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "only failed items can be retried" } })
+		return
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local sourceTag = noctalia.getConfig("source_tag")
+	if type(sourceTag) ~= "string" or sourceTag == "" then
+		sourceTag = "noctalia"
+	end
+	item.state = "pending_create"
+	registry.save(reg)
+	publishRegistry()
+	postNote(token, sourceTag, item.source_id, {
+		title = item.title,
+		notebook_id = item.notebook_id,
+		content = item.body,
+		date_on = item.date_on,
+	}, item, done)
+end
+
+local function noteUpdate(args, done)
+	args = args or {}
+	local item = findNote(args.id)
+	if not item or item.kind ~= "note" then
+		done({ ok = false, err = { kind = "not_found", status = 0, message = "unknown id" } })
+		return
+	end
+	if item.id == nil then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "not created yet" } })
+		return
+	end
+	local changes = args.changes
+	if type(changes) ~= "table" then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "missing changes" } })
+		return
+	end
+	-- Rename / move / re-date without content never touches the body (C3):
+	-- content is sent only when the caller includes it.
+	local payload = {}
+	local count = 0
+	if changes.name ~= nil then
+		local name = noctalia.string.trim(tostring(changes.name))
+		if name == "" then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "title required" } })
+			return
+		end
+		payload.name = name
+		count = count + 1
+	end
+	if changes.notebook ~= nil then
+		local notebookId, notebookOk = resolveNotebook(changes.notebook)
+		if not notebookOk then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "unknown notebook" } })
+			return
+		end
+		payload.notebook_id = notebookId
+		count = count + 1
+	end
+	if changes.date_on ~= nil then
+		if not ids.isDate(changes.date_on) then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "bad date" } })
+			return
+		end
+		payload.date_on = changes.date_on
+		count = count + 1
+	end
+	if changes.content ~= nil then
+		payload.content = tostring(changes.content)
+		count = count + 1
+	end
+	if count == 0 then
+		done({ ok = true })
+		return
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local cacheBodies = noctalia.getConfig("cache_bodies") == true
+	item.state = "pending_update"
+	registry.save(reg)
+	publishRegistry()
+	api.request(token, "PUT", "/notes/" .. item.id, payload, function(r)
+		if r.ok then
+			if payload.name then
+				item.title = payload.name
+			end
+			if payload.notebook_id ~= nil then
+				item.notebook_id = payload.notebook_id
+				item.notebook_name = changes.notebook
+			end
+			if payload.date_on then
+				item.date_on = payload.date_on
+			end
+			if payload.content ~= nil then
+				item.body = cacheBodies and payload.content or nil
+			end
+			item.state = "synced"
+			item.last_error = nil
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true })
+		elseif r.status == 404 then
+			item.state = "orphaned"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = { kind = "not_found", status = 404, message = "gone from Lunatask" } })
+		else
+			item.state = "failed"
+			item.last_error = r.err and r.err.kind or "server"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = r.err })
+		end
+	end)
+end
+
+local function noteDelete(args, done)
+	local item = findNote(args and args.id)
+	if not item or item.kind ~= "note" then
+		done({ ok = true })
+		return
+	end
+	if item.id == nil then
+		registry.removeById(reg, item.source_id)
+		registry.save(reg)
+		publishRegistry()
+		done({ ok = true })
+		return
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	item.state = "pending_delete"
+	registry.save(reg)
+	publishRegistry()
+	api.request(token, "DELETE", "/notes/" .. item.id, nil, function(r)
+		if r.ok or r.status == 404 then
+			registry.removeById(reg, item.source_id)
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true })
+		else
+			item.state = "failed"
+			item.last_error = r.err and r.err.kind or "server"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = r.err })
+		end
+	end)
+end
+
 -- Reconciliation (§7.5): refresh metadata from the server, mark items that
 -- vanished elsewhere as orphaned. Never mutates on transport failure, and
 -- never mass-orphans on a suspiciously empty response.
@@ -575,6 +908,14 @@ local function handleOp(op, args, done)
 		taskUpdate(args, done)
 	elseif op == "task.delete" then
 		taskDelete(args, done)
+	elseif op == "note.create" then
+		noteCreate(args, done)
+	elseif op == "note.retry" then
+		noteRetry(args, done)
+	elseif op == "note.update" then
+		noteUpdate(args, done)
+	elseif op == "note.delete" then
+		noteDelete(args, done)
 	else
 		done({ ok = false, err = { kind = "validation", status = 0, message = "unknown op" } })
 	end

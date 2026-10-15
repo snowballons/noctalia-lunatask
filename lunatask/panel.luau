@@ -33,6 +33,18 @@ local eStatusIdx = 1
 local ePrioIdx = 3
 local delArmSid = nil -- source_id with armed delete confirm
 local delArmLeft = 0 -- seconds left before the confirm reverts
+local nshowForm = false
+local nformKey = 0
+local nTitle = ""
+local nContent = ""
+local nDate = ""
+local nBookIdx = 1 -- 1 = Unfiled, else nbNames()[idx - 1]
+local neditingSid = nil
+local neKey = 0
+local neTitle = ""
+local neContent = ""
+local neDate = ""
+local neBookIdx = 1
 
 -- Forward declaration: every onClick/onChange closure below calls render(),
 -- but render() is defined at the bottom. Without this, those closures would
@@ -67,6 +79,37 @@ local function areaNames()
 		table.sort(names)
 	end
 	return names
+end
+
+-- Notebook options for the create form: first entry is explicit Unfiled.
+local function nbNames()
+	local books = noctalia.getConfig("notebooks")
+	local names = {}
+	if type(books) == "table" then
+		for name, _ in pairs(books) do
+			names[#names + 1] = name
+		end
+		table.sort(names)
+	end
+	return names
+end
+
+local function nbOptions()
+	local opts = { noctalia.tr("ui.panel.unfiled") }
+	for _, n in ipairs(nbNames()) do
+		opts[#opts + 1] = n
+	end
+	return opts
+end
+
+-- Outgoing value for a create-form notebook index: false = omit even when a
+-- default_notebook is configured; otherwise the notebook name.
+local function nbChoice(idx)
+	local names = nbNames()
+	if idx <= 1 then
+		return false
+	end
+	return names[idx - 1]
 end
 
 local function statusIdxFor(value)
@@ -451,6 +494,323 @@ local function taskRow(item)
 	return ui.column({ gap = 2 }, rows)
 end
 
+local function submitNote()
+	sendCmd("note.create", {
+		title = nTitle,
+		notebook = nbChoice(nBookIdx),
+		date_on = (nDate ~= "" and nDate or nil),
+		content = (nContent ~= "" and nContent or nil),
+	})
+end
+
+local function nFormTree()
+	local opts = nbOptions()
+	if nBookIdx < 1 or nBookIdx > #opts then
+		nBookIdx = 1
+	end
+	return ui.column({ gap = 8 }, {
+		ui.input({
+			key = "ntitle" .. tostring(nformKey),
+			placeholder = noctalia.tr("ui.panel.form.title"),
+			onChange = function(v)
+				nTitle = v
+			end,
+		}),
+		ui.row({ gap = 8 }, {
+			ui.column({ flexGrow = 1 }, {
+				ui.label({ text = noctalia.tr("ui.panel.form.notebook") }),
+				ui.select({
+					options = opts,
+					selectedIndex = nBookIdx - 1,
+					onChange = function(v)
+						nBookIdx = selIdx(v, #opts)
+						render()
+					end,
+				}),
+			}),
+			ui.column({ flexGrow = 1 }, {
+				ui.label({ text = noctalia.tr("ui.panel.form.date") }),
+				ui.input({
+					key = "ndate" .. tostring(nformKey),
+					placeholder = "YYYY-MM-DD",
+					onChange = function(v)
+						nDate = v
+					end,
+				}),
+			}),
+		}),
+		ui.label({ text = noctalia.tr("ui.panel.form.content") }),
+		ui.input({
+			key = "ncontent" .. tostring(nformKey),
+			multiline = true,
+			placeholder = "Markdown",
+			onChange = function(v)
+				nContent = v
+			end,
+		}),
+		ui.row({ justify = "end", gap = 8 }, {
+			ui.button({
+				text = noctalia.tr("ui.panel.cancel"),
+				enabled = pending == nil,
+				onClick = function()
+					nshowForm = false
+					render()
+				end,
+			}),
+			ui.button({
+				text = noctalia.tr("ui.panel.create"),
+				variant = "primary",
+				enabled = pending == nil,
+				onClick = function()
+					submitNote()
+				end,
+			}),
+		}),
+	})
+end
+
+local function openNEdit(item)
+	neditingSid = tostring(item.source_id or item.id)
+	neKey = neKey + 1
+	neTitle = tostring(item.title or "")
+	neDate = tostring(item.date_on or "")
+	neContent = tostring(item.body or "")
+	neBookIdx = 1
+	local names = nbNames()
+	for i, n in ipairs(names) do
+		if n == item.notebook_name then
+			neBookIdx = i
+			break
+		end
+	end
+	render()
+end
+
+local function submitNEdit()
+	local item = nil
+	for _, it in ipairs(regItems) do
+		if tostring(it.source_id or it.id) == neditingSid then
+			item = it
+			break
+		end
+	end
+	if item == nil or item.id == nil then
+		neditingSid = nil
+		render()
+		return
+	end
+	local changes = {}
+	if neTitle ~= tostring(item.title or "") then
+		changes.name = neTitle
+	end
+	local names = nbNames()
+	local selName = names[neBookIdx]
+	if selName ~= nil and selName ~= item.notebook_name then
+		changes.notebook = selName
+	end
+	if neDate ~= tostring(item.date_on or "") and neDate ~= "" then
+		changes.date_on = neDate
+	end
+	-- Content replaces the whole note (C3): send only when the user typed
+	-- something new. Renaming / moving / re-dating never touches the body.
+	if item.body ~= nil then
+		if neContent ~= tostring(item.body or "") then
+			changes.content = neContent
+		end
+	elseif neContent ~= "" then
+		changes.content = neContent
+	end
+	local empty = true
+	for _, _ in pairs(changes) do
+		empty = false
+		break
+	end
+	if empty then
+		neditingSid = nil
+		render()
+		return
+	end
+	sendCmd("note.update", { id = item.id, changes = changes })
+end
+
+local function nEditTree()
+	local names = nbNames()
+	local parts = {
+		ui.input({
+			key = "netitle" .. tostring(neKey),
+			value = neTitle,
+			placeholder = noctalia.tr("ui.panel.form.title"),
+			onChange = function(v)
+				neTitle = v
+			end,
+		}),
+	}
+	if #names > 0 then
+		if neBookIdx < 1 or neBookIdx > #names then
+			neBookIdx = 1
+		end
+		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.form.notebook") }))
+		table.insert(parts, ui.select({
+			options = names,
+			selectedIndex = neBookIdx - 1,
+			onChange = function(v)
+				neBookIdx = selIdx(v, #names)
+				render()
+			end,
+		}))
+	end
+	table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.form.date") }))
+	table.insert(parts, ui.input({
+		key = "nedate" .. tostring(neKey),
+		value = neDate,
+		placeholder = "YYYY-MM-DD",
+		onChange = function(v)
+			neDate = v
+		end,
+	}))
+	table.insert(parts, ui.label({ text = noctalia.tr("ui.note.replace_warning") }))
+	table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.edit_note_hint") }))
+	table.insert(parts, ui.input({
+		key = "necontent" .. tostring(neKey),
+		value = neContent,
+		multiline = true,
+		placeholder = "Markdown",
+		onChange = function(v)
+			neContent = v
+		end,
+	}))
+	table.insert(parts, ui.row({ justify = "end", gap = 8 }, {
+		ui.button({
+			text = noctalia.tr("ui.panel.cancel"),
+			enabled = pending == nil,
+			onClick = function()
+				neditingSid = nil
+				render()
+			end,
+		}),
+		ui.button({
+			text = noctalia.tr("ui.panel.save"),
+			variant = "primary",
+			enabled = pending == nil,
+			onClick = function()
+				submitNEdit()
+			end,
+		}),
+	}))
+	return ui.column({ gap = 8 }, parts)
+end
+
+local function noteRow(item)
+	local key = tostring(item.source_id or item.id or "?")
+	local title = tostring(item.title or "?")
+	local where = tostring(item.notebook_name or noctalia.tr("ui.panel.unfiled"))
+	local meta = where .. " · " .. tostring(item.state)
+	local cells = {
+		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1 }),
+		ui.label({ text = meta }),
+	}
+	if item.state == "synced" then
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.edit"),
+			enabled = pending == nil,
+			onClick = function()
+				openNEdit(item)
+			end,
+		}))
+		local deleting = (delArmSid ~= nil and delArmSid == key)
+		table.insert(cells, ui.button({
+			text = deleting and noctalia.tr("ui.delete.confirm") or noctalia.tr("ui.panel.delete"),
+			variant = deleting and "destructive" or nil,
+			enabled = pending == nil,
+			onClick = function()
+				local confirm = noctalia.getConfig("confirm_delete")
+				if confirm == false then
+					confirm = false
+				else
+					confirm = true
+				end
+				if not confirm or (delArmSid ~= nil and delArmSid == key) then
+					delArmSid = nil
+					sendCmd("note.delete", { id = item.id })
+				else
+					delArmSid = key
+					delArmLeft = 5
+					render()
+				end
+			end,
+		}))
+	elseif item.state == "failed" then
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.retry"),
+			enabled = pending == nil,
+			onClick = function()
+				sendCmd("note.retry", { id = item.source_id })
+			end,
+		}))
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.forget"),
+			enabled = pending == nil,
+			onClick = function()
+				sendCmd("registry.forget", { id = item.source_id })
+			end,
+		}))
+	elseif item.state == "orphaned" then
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.forget"),
+			enabled = pending == nil,
+			onClick = function()
+				sendCmd("registry.forget", { id = item.source_id })
+			end,
+		}))
+	end
+	local rows = { ui.row({ key = "nreg-" .. key, gap = 8, align = "center" }, cells) }
+	if item.last_error ~= nil then
+		table.insert(rows, ui.label({ text = tostring(item.last_error) }))
+	end
+	if item.state == "orphaned" then
+		table.insert(rows, ui.label({ text = noctalia.tr("ui.panel.orphaned_hint") }))
+	end
+	return ui.column({ gap = 2 }, rows)
+end
+
+local function notesTab()
+	local parts = {}
+	if lastResult ~= "" then
+		table.insert(parts, ui.label({ text = lastResult }))
+	end
+	if nshowForm then
+		table.insert(parts, nFormTree())
+	else
+		table.insert(parts, ui.button({
+			text = noctalia.tr("ui.panel.new_note"),
+			enabled = pending == nil,
+			onClick = function()
+				nshowForm = true
+				render()
+			end,
+		}))
+	end
+	table.insert(parts, ui.separator({}))
+	if neditingSid ~= nil then
+		table.insert(parts, nEditTree())
+		table.insert(parts, ui.separator({}))
+	end
+	local found = false
+	local itemRows = {}
+	for i = #regItems, 1, -1 do
+		if regItems[i].kind == "note" then
+			found = true
+			table.insert(itemRows, noteRow(regItems[i]))
+		end
+	end
+	if not found then
+		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
+	else
+		table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
+	end
+	return ui.column({ gap = 10 }, parts)
+end
+
 local function tasksTab()
 	local parts = {}
 	table.insert(parts, ui.row({ gap = 8, align = "center" }, {
@@ -487,10 +847,18 @@ local function tasksTab()
 		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
 	else
 		local itemRows = {}
+		local found = false
 		for i = #regItems, 1, -1 do
-			table.insert(itemRows, taskRow(regItems[i]))
+			if regItems[i].kind == "task" then
+				found = true
+				table.insert(itemRows, taskRow(regItems[i]))
+			end
 		end
-		table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
+		if not found then
+			table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
+		else
+			table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
+		end
 	end
 	table.insert(parts, ui.separator({}))
 	table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.diag.select_hint") }))
@@ -537,7 +905,7 @@ render = function()
 	if tab == "tasks" then
 		body = tasksTab()
 	elseif tab == "notes" then
-		body = ui.label({ text = noctalia.tr("ui.panel.notes_stub") })
+		body = notesTab()
 	else
 		body = ui.label({ text = noctalia.tr("ui.panel.journal_stub") })
 	end
@@ -619,6 +987,34 @@ noctalia.state.watch("evt.panel", function(msg)
 			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
 		end
 	elseif msg.op == "task.delete" then
+		if msg.ok then
+			delArmSid = nil
+			lastResult = noctalia.tr("ui.panel.deleted")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "note.create" then
+		if msg.ok then
+			nshowForm = false
+			nformKey = nformKey + 1
+			nTitle = ""
+			nContent = ""
+			nDate = ""
+			lastResult = noctalia.tr("notify.note_created")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "note.update" then
+		if msg.ok then
+			neditingSid = nil
+			lastResult = noctalia.tr("ui.panel.updated")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "note.delete" then
 		if msg.ok then
 			delArmSid = nil
 			lastResult = noctalia.tr("ui.panel.deleted")

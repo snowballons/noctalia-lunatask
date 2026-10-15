@@ -57,6 +57,22 @@ function M.listNotes(token, sourceTag, cb)
 	end)
 end
 
+-- Single-note recovery (D7): find by idempotency pair.
+function M.listNotesBySource(token, sourceTag, sourceId, cb)
+	local q = "/notes?source=" .. noctalia.string.urlEncode(sourceTag) .. "&source_id=" .. noctalia.string.urlEncode(sourceId)
+	M.request(token, "GET", q, nil, function(r)
+		if r.ok then
+			local notes = (r.data and r.data.notes) or {}
+			if type(notes) ~= "table" then
+				notes = {}
+			end
+			cb({ ok = true, notes = notes })
+		else
+			cb({ ok = false, err = r.err })
+		end
+	end)
+end
+
 -- Map HTTP status to plugin err.kind (spec §11.1).
 -- No 429 / Retry-After is documented, so there is no rate-limit branch.
 function M.classify(status)

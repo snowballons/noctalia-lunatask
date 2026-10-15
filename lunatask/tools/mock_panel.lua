@@ -214,7 +214,7 @@ check("stale evt ignored (no rerender)", #renders == n_renders)
 
 -- ── tabs ─────────────────────────────────────────────────────────
 safe_call("notes tab", find_button(renders[#renders], "ui.tab.notes").props.onClick)
-check("notes stub", has_text(renders[#renders], "ui.panel.notes_stub"))
+check("notes tab functional", find_button(renders[#renders], "ui.panel.new_note") ~= nil)
 safe_call("journal tab", find_button(renders[#renders], "ui.tab.journal").props.onClick)
 check("journal stub", has_text(renders[#renders], "ui.panel.journal_stub"))
 safe_call("back to tasks", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
@@ -292,10 +292,73 @@ safe_call("evt refresh ok/2 orphaned", fire, "evt.panel",
 	{ seq = cmdr.seq, op = "registry.refresh", ok = true, orphaned = 2 })
 check("refresh orphan count shown", has_text(renders[#renders], "ui.panel.refresh_ok ui.panel.refresh_orphaned"))
 
+-- ── M4: notes tab ──────────────────────────────────────────────────
+safe_call("notes tab open", find_button(renders[#renders], "ui.tab.notes").props.onClick)
+tree = renders[#renders]
+local newnote = find_button(tree, "ui.panel.new_note")
+check("new note button found", newnote ~= nil)
+safe_call("open note form", newnote.props.onClick)
+tree = renders[#renders]
+local ntitle = find_input(tree, "ui.panel.form.title")
+check("note title input present", ntitle ~= nil)
+safe_call("type note title", ntitle.props.onChange, "Meeting")
+local ncontent = find_input(tree, "Markdown")
+check("note content input present", ncontent ~= nil)
+safe_call("type note content", ncontent.props.onChange, "hello")
+local ncreate = find_button(tree, "ui.panel.create")
+safe_call("click note create", ncreate.props.onClick)
+local cmdn = state_store["cmd.panel"]
+check("note.create cmd", cmdn.op == "note.create" and cmdn.args.title == "Meeting")
+check("explicit unfiled sent", cmdn.args.notebook == false)
+safe_call("evt note ok", fire, "evt.panel", { seq = cmdn.seq, op = "note.create", ok = true })
+tree = renders[#renders]
+check("note form collapsed", find_input(tree, "ui.panel.form.title") == nil)
+check("note created notice", has_text(tree, "notify.note_created"))
+
+safe_call("note row watch", fire, "registry", { schema = 1, items = {
+	{ kind = "note", id = "rn-1", source_id = "nct-n1", state = "synced",
+		title = "Meeting", notebook_name = nil, body = nil },
+} })
+tree = renders[#renders]
+check("note row shown unfiled", has_text(tree, "● Meeting"))
+local nedit = find_button(tree, "ui.panel.edit")
+safe_call("open note edit", nedit.props.onClick)
+tree = renders[#renders]
+local netitle = find_input(tree, "ui.panel.form.title")
+safe_call("rename note", netitle.props.onChange, "Meeting 2")
+local nsave = find_button(tree, "ui.panel.save")
+safe_call("save note", nsave.props.onClick)
+local cmdnu = state_store["cmd.panel"]
+local ndiff = {}
+for k, _ in pairs(cmdnu.args.changes) do
+	ndiff[#ndiff + 1] = k
+end
+check("note diff-only (name)", cmdnu.op == "note.update" and #ndiff == 1 and cmdnu.args.changes.name == "Meeting 2")
+safe_call("evt note update ok", fire, "evt.panel", { seq = cmdnu.seq, op = "note.update", ok = true })
+
+local ndel = find_button(renders[#renders], "ui.panel.delete")
+safe_call("note delete arm", ndel.props.onClick)
+local nconfirm = find_button(renders[#renders], "ui.delete.confirm")
+safe_call("note delete confirm", nconfirm.props.onClick)
+local cmdnd = state_store["cmd.panel"]
+check("note.delete cmd", cmdnd.op == "note.delete" and cmdnd.args.id == "rn-1")
+safe_call("evt note delete ok", fire, "evt.panel", { seq = cmdnd.seq, op = "note.delete", ok = true })
+
+safe_call("failed note watch", fire, "registry", { schema = 1, items = {
+	{ kind = "note", id = nil, source_id = "nct-n2", state = "failed", title = "Bad note" },
+} })
+tree = renders[#renders]
+local nretry = find_button(tree, "ui.panel.retry")
+safe_call("note retry click", nretry.props.onClick)
+local cmdnr = state_store["cmd.panel"]
+check("note.retry cmd", cmdnr.op == "note.retry" and cmdnr.args.id == "nct-n2")
+safe_call("evt note retry ok", fire, "evt.panel", { seq = cmdnr.seq, op = "note.retry", ok = true })
+
 -- ── protocol hardening: gen stamp, svc restart, pending timeout ────
 state_store["svc_boot"] = 777
 panel_open = true
 safe_call("reopen2", onOpen, "")
+safe_call("back to tasks", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
 tree = renders[#renders]
 local pingbtn = find_button(tree, "ui.panel.ping")
 safe_call("click ping", pingbtn.props.onClick)
