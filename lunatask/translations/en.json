@@ -1,0 +1,10 @@
+{
+  "settings.token.label": "Access token",
+  "settings.token.description": "Stored as plain text in Noctalia's settings. Prefer a token file or the LUNATASK_ACCESS_TOKEN environment variable.",
+  "settings.token_file.label": "Token file",
+  "settings.token_file.description": "Path to a file containing only your Lunatask access token.",
+  "err.config": "Add your Lunatask access token in the plugin settings.",
+  "err.auth": "Lunatask rejected the token. It may be wrong or revoked.",
+  "err.network": "Could not reach Lunatask.",
+  "notify.connected": "Connected"
+}

@@ -1,0 +1,36 @@
+id = "snowballons/lunatask"
+name = "Lunatask"
+version = "0.1.0"
+plugin_api = 22
+author = "snowballons"
+license = "MIT"
+icon = "checklist"
+description = "Create, edit and delete Lunatask tasks and notes, and add journal entries, from Noctalia."
+tags = ["productivity"]
+dependencies = []
+
+# ───────────── Plugin-level settings (M0: token only) ─────────────
+# Seeded into every entry; read with noctalia.getConfig(key).
+# M1 adds: areas, default_area, notebooks, default_notebook,
+# default_task_status, cache_bodies, confirm_delete, source_tag, max_retries.
+
+[[setting]]
+key = "token"
+type = "string"
+label_key = "settings.token.label"
+description_key = "settings.token.description"
+default = ""
+
+[[setting]]
+key = "token_file"
+type = "file"
+label_key = "settings.token_file.label"
+description_key = "settings.token_file.description"
+default = ""
+
+# ───────────── Entries (M0: service only) ─────────────
+# M1 adds panel stub; M6 adds launcher_provider + optional widget.
+
+[[service]]
+id = "core"
+entry = "service.luau"
