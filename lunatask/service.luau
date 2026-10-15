@@ -25,7 +25,8 @@ local function resolveToken()
 
 	local file = noctalia.getConfig("token_file")
 	if file ~= nil and file ~= "" then
-		local raw = noctalia.readFile(noctalia.expandPath(file))
+		-- Trim: settings GUI entries can carry stray whitespace.
+		local raw = noctalia.readFile(noctalia.expandPath(noctalia.string.trim(file)))
 		if raw ~= nil and raw ~= "" then
 			return noctalia.string.trim(raw)
 		end
@@ -161,6 +162,9 @@ local function taskCreate(args, done)
 	local areas = noctalia.getConfig("areas")
 	local areaName = args.area
 	local areaId = (type(areas) == "table" and type(areaName) == "string") and areas[areaName] or nil
+	if type(areaId) == "string" then
+		areaId = noctalia.string.trim(areaId)
+	end
 	if not ids.isUuid(areaId) then
 		done({ ok = false, err = { kind = "validation", status = 0, message = "unknown area" } })
 		return
