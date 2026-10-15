@@ -168,6 +168,18 @@ local function count_type(tree, ctype)
 	return n
 end
 
+local function footer_has(tree, text)
+	if type(tree) ~= "table" or tree.type == nil then
+		return false
+	end
+	local kids = tree.children or {}
+	local foot = kids[#kids]
+	if foot == nil then
+		return false
+	end
+	return has_text(foot, text)
+end
+
 local function safe_call(name, fn, ...)
 	local ok, err = pcall(fn, ...)
 	check(name .. " (no error)", ok, err)
@@ -182,6 +194,7 @@ local tree = renders[#renders]
 check("onOpen renders", tree ~= nil)
 check("header + tabs present", has_text(tree, "ui.panel.title") and has_text(tree, "ui.tab.tasks"))
 check("empty registry hint", has_text(tree, "ui.panel.registry.empty"))
+check("footer offers new task", footer_has(tree, "ui.panel.new_task"))
 
 -- ── reopen seeds existing registry (no watch needed) ───────────────
 state_store["registry"] = { schema = 1, items = {
@@ -202,6 +215,7 @@ safe_call("click new task", newbtn.props.onClick)
 tree = renders[#renders]
 check("form hides list rows", not has_key_prefix(tree, "reg-"))
 check("single scroll container", count_type(tree, "scroll") == 1)
+check("footer shows create+cancel", footer_has(tree, "ui.panel.create") and footer_has(tree, "ui.panel.cancel"))
 local title_in = find_input(tree, "ui.panel.form.title")
 check("form title input present", title_in ~= nil)
 safe_call("type title", title_in.props.onChange, "Buy milk")
@@ -409,15 +423,32 @@ check("journal created notice", has_text(tree, "notify.journal_created"))
 safe_call("journal history watch", fire, "registry", { schema = 1, items = {
 	{ kind = "journal", id = "rj-1", state = "synced", date_on = os.date("%Y-%m-%d") },
 } })
-check("history row shown", has_text(renders[#renders], "● " .. os.date("%Y-%m-%d")))
+check("history grouped under day header", has_text(renders[#renders], "Today · " .. os.date("%Y-%m-%d")))
 
--- malformed date rejected locally: no command leaves the panel
+-- two dates -> two day headers, newest first
+safe_call("multi-day watch", fire, "registry", { schema = 1, items = {
+	{ kind = "journal", id = "rj-1", state = "synced", date_on = "2026-10-13", excerpt = "old" },
+	{ kind = "journal", id = "rj-2", state = "synced", date_on = os.date("%Y-%m-%d"), excerpt = "new" },
+} })
+tree = renders[#renders]
+local day_headers = 0
+for _, n in ipairs(nodes(tree)) do
+	if type(n.props.key) == "string" and n.props.key:sub(1, 5) == "jday-" then
+		day_headers = day_headers + 1
+	end
+end
+check("one header per date", day_headers == 2)
+check("excerpt shown", has_text(tree, "● new"))
 safe_call("type bad date", find_input(renders[#renders], "YYYY-MM-DD").props.onChange, "yesterday")
 safe_call("type more content", find_input(renders[#renders], "Markdown").props.onChange, "x")
 local seq_before = cmdj.seq
 safe_call("click create bad date", find_button(renders[#renders], "ui.panel.create").props.onClick)
 check("bad date sends nothing", state_store["cmd.panel"].seq == seq_before)
 check("bad date error shown", has_text(renders[#renders], "ui.panel.bad_date"))
+
+-- switching tabs clears stale feedback
+safe_call("leave journal", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
+check("stale notice cleared", not has_text(renders[#renders], "notify.journal_created"))
 
 -- ── M6: launcher deep-link opens on the item ───────────────────────
 state_store["registry"] = { schema = 1, items = {

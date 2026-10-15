@@ -29,6 +29,24 @@ function M.today()
 	return os.date("%Y-%m-%d") -- local date; see V-14
 end
 
+-- Human day header for journal groups: Today / Yesterday / weekday.
+function M.dayLabel(s)
+	if not M.isDate(s) then
+		return tostring(s or "?")
+	end
+	local y, mo, d = s:match("^(%d+)-(%d+)-(%d+)$")
+	local t = os.time({ year = y + 0, month = mo + 0, day = d + 0, hour = 12 })
+	local now = os.date("*t")
+	local today = os.time({ year = now.year, month = now.month, day = now.day, hour = 12 })
+	local diff = math.floor((today - t) / 86400 + 0.5)
+	if diff == 0 then
+		return "Today"
+	elseif diff == 1 then
+		return "Yesterday"
+	end
+	return os.date("%A", t)
+end
+
 function M.utcNow()
 	return os.date("!%Y-%m-%dT%H:%M:%SZ")
 end

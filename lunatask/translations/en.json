@@ -71,6 +71,7 @@
   "ui.panel.form.content": "Content (Markdown)",
   "ui.panel.unfiled": "Unfiled",
   "ui.panel.keep_notebook": "Keep in {name}",
+  "ui.panel.form.date": "Date",
   "ui.panel.form.jname": "Name (optional, blank uses the date)",
   "ui.panel.bad_date": "Use YYYY-MM-DD.",
   "err.config": "Add your Lunatask access token in the plugin settings.",

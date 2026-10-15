@@ -155,6 +155,24 @@ local function glyphFor(state)
 	end
 end
 
+-- Sticky footer: the primary action stays in view while the body scrolls.
+local function actionRow(cancelFn, submitText, submitFn)
+	return ui.row({ justify = "end", gap = 8 }, {
+		ui.button({
+			text = noctalia.tr("ui.panel.cancel"),
+			enabled = pending == nil,
+			onClick = cancelFn,
+		}),
+		ui.button({
+			text = submitText,
+			variant = "primary",
+			enabled = pending == nil,
+			onClick = submitFn,
+		}),
+	})
+end
+
+
 function sendCmd(op, args)
 	if pending ~= nil then
 		return
@@ -259,24 +277,6 @@ local function formTree()
 			onChange = function(v)
 				fNote = v
 			end,
-		}),
-		ui.row({ justify = "end", gap = 8 }, {
-			ui.button({
-				text = noctalia.tr("ui.panel.cancel"),
-				enabled = pending == nil,
-				onClick = function()
-					showForm = false
-					render()
-				end,
-			}),
-			ui.button({
-				text = noctalia.tr("ui.panel.create"),
-				variant = "primary",
-				enabled = pending == nil,
-				onClick = function()
-					submitTask()
-				end,
-			}),
 		}),
 	})
 end
@@ -397,24 +397,6 @@ local function editTree()
 			onChange = function(v)
 				eNote = v
 			end,
-		}),
-		ui.row({ justify = "end", gap = 8 }, {
-			ui.button({
-				text = noctalia.tr("ui.panel.cancel"),
-				enabled = pending == nil,
-				onClick = function()
-					editingSid = nil
-					render()
-				end,
-			}),
-			ui.button({
-				text = noctalia.tr("ui.panel.save"),
-				variant = "primary",
-				enabled = pending == nil,
-				onClick = function()
-					submitEdit()
-				end,
-			}),
 		}),
 	})
 end
@@ -561,24 +543,6 @@ local function nFormTree()
 				nContent = v
 			end,
 		}),
-		ui.row({ justify = "end", gap = 8 }, {
-			ui.button({
-				text = noctalia.tr("ui.panel.cancel"),
-				enabled = pending == nil,
-				onClick = function()
-					nshowForm = false
-					render()
-				end,
-			}),
-			ui.button({
-				text = noctalia.tr("ui.panel.create"),
-				variant = "primary",
-				enabled = pending == nil,
-				onClick = function()
-					submitNote()
-				end,
-			}),
-		}),
 	})
 end
 
@@ -697,24 +661,6 @@ local function nEditTree()
 			neContent = v
 		end,
 	}))
-	table.insert(parts, ui.row({ justify = "end", gap = 8 }, {
-		ui.button({
-			text = noctalia.tr("ui.panel.cancel"),
-			enabled = pending == nil,
-			onClick = function()
-				neditingSid = nil
-				render()
-			end,
-		}),
-		ui.button({
-			text = noctalia.tr("ui.panel.save"),
-			variant = "primary",
-			enabled = pending == nil,
-			onClick = function()
-				submitNEdit()
-			end,
-		}),
-	}))
 	return ui.column({ gap = 8 }, parts)
 end
 
@@ -802,15 +748,6 @@ local function notesTab()
 	elseif neditingSid ~= nil then
 		table.insert(body, nEditTree())
 	else
-		table.insert(body, ui.button({
-			text = noctalia.tr("ui.panel.new_note"),
-			enabled = pending == nil,
-			onClick = function()
-				nshowForm = true
-				render()
-			end,
-		}))
-		table.insert(body, ui.separator({}))
 		local found = false
 		for i = #regItems, 1, -1 do
 			if regItems[i].kind == "note" then
@@ -855,7 +792,7 @@ local function journalTab()
 	local parts = {}
 	table.insert(parts, ui.row({ gap = 8 }, {
 		ui.column({ flexGrow = 1 }, {
-			ui.label({ text = noctalia.tr("ui.panel.form.scheduled") }),
+			ui.label({ text = noctalia.tr("ui.panel.form.date") }),
 			ui.input({
 				key = "jdate" .. tostring(jKey),
 				value = jDate,
@@ -865,7 +802,7 @@ local function journalTab()
 				end,
 			}),
 		}),
-		ui.column({ flexGrow = 2 }, {
+		ui.column({ flexGrow = 1 }, {
 			ui.label({ text = noctalia.tr("ui.panel.form.jname") }),
 			ui.input({
 				key = "jname" .. tostring(jKey),
@@ -883,42 +820,60 @@ local function journalTab()
 		key = "jcontent" .. tostring(jKey),
 		value = jContent,
 		multiline = true,
+		height = 120,
 		placeholder = "Markdown",
 		onChange = function(v)
 			jContent = v
 		end,
 	}))
-	table.insert(parts, ui.row({ justify = "end", gap = 8 }, {
-		ui.button({
-			text = noctalia.tr("ui.panel.create"),
-			variant = "primary",
-			enabled = pending == nil,
-			onClick = function()
-				submitJournal()
-			end,
-		}),
-	}))
 	table.insert(parts, ui.separator({}))
 	table.insert(parts, ui.label({ text = noctalia.tr("ui.journal.no_edit") }))
-	local found = false
+	-- History grouped by day (newest first): a dated header plus entries,
+	-- instead of one flat undated bullet list.
+	local groups = {}
+	local byDate = {}
 	for i = #regItems, 1, -1 do
 		local item = regItems[i]
 		if item.kind == "journal" then
-			found = true
-			local key = tostring(item.id or item.date_on or "?") .. "-" .. tostring(i)
-			local line = glyphFor(item.state) .. " " .. tostring(item.date_on or "?")
-			if item.excerpt ~= nil then
-				line = line .. " — " .. tostring(item.excerpt):sub(1, 80)
+			local dkey = tostring(item.date_on or "?")
+			if byDate[dkey] == nil then
+				byDate[dkey] = { date = dkey, items = {} }
+				groups[#groups + 1] = byDate[dkey]
 			end
-			local rows = { ui.label({ key = "jreg-" .. key, text = line, maxLines = 2 }) }
-			if item.last_error ~= nil then
-				table.insert(rows, ui.label({ text = tostring(item.last_error) }))
-			end
-			table.insert(parts, ui.column({ gap = 2 }, rows))
+			table.insert(byDate[dkey].items, item)
 		end
 	end
-	if not found then
+	if #groups == 0 then
 		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
+	else
+		for _, g in ipairs(groups) do
+			local day = ids.dayLabel(g.date)
+			local header = day
+			if day ~= g.date then
+				header = day .. " · " .. g.date
+			end
+			table.insert(parts, ui.label({
+				key = "jday-" .. g.date,
+				text = header,
+				fontWeight = "bold",
+				color = "primary",
+			}))
+			for _, item in ipairs(g.items) do
+				local line = glyphFor(item.state)
+				if item.excerpt ~= nil and item.excerpt ~= "" then
+					line = line .. " " .. tostring(item.excerpt):sub(1, 120)
+				end
+				local rows = { ui.label({
+					key = "jreg-" .. tostring(item.id or item.date_on or "?"),
+					text = line,
+					maxLines = 3,
+				}) }
+				if item.last_error ~= nil then
+					table.insert(rows, ui.label({ text = tostring(item.last_error) }))
+				end
+				table.insert(parts, ui.column({ gap = 2 }, rows))
+			end
+		end
 	end
 	table.insert(head, ui.scroll({ flexGrow = 1 }, { ui.column({ gap = 10 }, parts) }))
 	return ui.column({ gap = 10 }, head)
@@ -948,15 +903,6 @@ local function tasksTab()
 	elseif editingSid ~= nil then
 		table.insert(body, editTree())
 	else
-		table.insert(body, ui.button({
-			text = noctalia.tr("ui.panel.new_task"),
-			enabled = pending == nil,
-			onClick = function()
-				showForm = true
-				render()
-			end,
-		}))
-		table.insert(body, ui.separator({}))
 		local found = false
 		for i = #regItems, 1, -1 do
 			if regItems[i].kind == "task" then
@@ -972,6 +918,63 @@ local function tasksTab()
 	return ui.column({ gap = 10 }, head)
 end
 
+local function tabFooter()
+	if tab == "tasks" then
+		if showForm then
+			return actionRow(function()
+				showForm = false
+				render()
+			end, noctalia.tr("ui.panel.create"), submitTask)
+		elseif editingSid ~= nil then
+			return actionRow(function()
+				editingSid = nil
+				render()
+			end, noctalia.tr("ui.panel.save"), submitEdit)
+		end
+		return ui.button({
+			text = noctalia.tr("ui.panel.new_task"),
+			variant = "primary",
+			flexGrow = 1,
+			enabled = pending == nil,
+			onClick = function()
+				showForm = true
+				render()
+			end,
+		})
+	elseif tab == "notes" then
+		if nshowForm then
+			return actionRow(function()
+				nshowForm = false
+				render()
+			end, noctalia.tr("ui.panel.create"), submitNote)
+		elseif neditingSid ~= nil then
+			return actionRow(function()
+				neditingSid = nil
+				render()
+			end, noctalia.tr("ui.panel.save"), submitNEdit)
+		end
+		return ui.button({
+			text = noctalia.tr("ui.panel.new_note"),
+			variant = "primary",
+			flexGrow = 1,
+			enabled = pending == nil,
+			onClick = function()
+				nshowForm = true
+				render()
+			end,
+		})
+	end
+	return ui.button({
+		text = noctalia.tr("ui.panel.create"),
+		variant = "primary",
+		flexGrow = 1,
+		enabled = pending == nil,
+		onClick = function()
+			submitJournal()
+		end,
+	})
+end
+
 render = function()
 	local tabs = ui.row({ gap = 8 }, {
 		ui.button({
@@ -979,6 +982,7 @@ render = function()
 			selected = tab == "tasks",
 			onClick = function()
 				tab = "tasks"
+				lastResult = ""
 				render()
 			end,
 		}),
@@ -987,6 +991,7 @@ render = function()
 			selected = tab == "notes",
 			onClick = function()
 				tab = "notes"
+				lastResult = ""
 				render()
 			end,
 		}),
@@ -995,6 +1000,7 @@ render = function()
 			selected = tab == "journal",
 			onClick = function()
 				tab = "journal"
+				lastResult = ""
 				render()
 			end,
 		}),
@@ -1023,6 +1029,8 @@ render = function()
 		ui.label({ text = noctalia.tr("ui.banner.visibility"), maxLines = 3 }),
 		tabs,
 		body,
+		ui.separator({}),
+		tabFooter(),
 	}))
 end
 

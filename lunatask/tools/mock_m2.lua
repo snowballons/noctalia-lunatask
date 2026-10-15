@@ -191,6 +191,10 @@ for _ = 1, 100 do
 end
 check("source_id format + unique x100", fmt_ok)
 check("isDate ok", ids.isDate("2026-10-15") and not ids.isDate("15-10-2026") and not ids.isDate(""))
+check("dayLabel today/yesterday/weekday", ids.dayLabel(os.date("%Y-%m-%d")) == "Today"
+	and ids.dayLabel(os.date("%Y-%m-%d", os.time() - 86400)) == "Yesterday"
+	and ids.dayLabel("2026-10-13") == os.date("%A", os.time({ year = 2026, month = 10, day = 13, hour = 12 }))
+	and ids.dayLabel("nope") == "nope")
 check("isUuid ok", ids.isUuid("11111111-2222-3333-4444-555555555555") and not ids.isUuid("not-a-uuid"))
 
 -- ── service ──────────────────────────────────────────────────────
