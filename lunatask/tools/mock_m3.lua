@@ -9,7 +9,7 @@ local fake_env = {}
 local fake_config = {
 	token = "valid-token",
 	token_file = "",
-	areas = { Work = "11111111-2222-3333-4444-555555555555" },
+	areas = { Work = "11111111-2222-3333-4444-555555555555", Other = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
 	default_task_status = "later",
 	cache_bodies = false,
 	source_tag = "noctalia",
@@ -250,6 +250,22 @@ end
 local er = cmd("registry.refresh", nil)
 check("refresh ok", er.ok == true)
 check("app-side status reflected", item.status == "completed")
+
+-- app-side area move (+ unknown area)
+for _, t in ipairs(server.tasks) do
+	if t.id == "task-1" then
+		t.area_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	end
+end
+cmd("registry.refresh", nil)
+check("app-side area reflected", item.area_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" and item.area_name == "Other")
+for _, t in ipairs(server.tasks) do
+	if t.id == "task-1" then
+		t.area_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	end
+end
+cmd("registry.refresh", nil)
+check("unknown area keeps id, clears name", item.area_id == "ffffffff-ffff-ffff-ffff-ffffffffffff" and item.area_name == nil)
 
 -- orphan: registry item missing server-side
 table.insert(svc._registry.items, { kind = "task", id = "task-absent", source_id = "nct-a",

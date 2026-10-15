@@ -9,7 +9,7 @@ local fake_env = {}
 local fake_config = {
 	token = "valid-token",
 	token_file = "",
-	notebooks = { Work = "22222222-3333-4444-5555-666666666666" },
+	notebooks = { Work = "22222222-3333-4444-5555-666666666666", Later = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff" },
 	default_notebook = "",
 	areas = { Work = "11111111-2222-3333-4444-555555555555" },
 	default_task_status = "later",
@@ -130,7 +130,7 @@ noctalia = {
 			local out = {}
 			for _, n in ipairs(server.notes) do
 				if sid == nil or n.source_id == sid then
-					out[#out + 1] = { id = n.id }
+					out[#out + 1] = { id = n.id, notebook_id = n.notebook_id, date_on = n.date_on }
 				end
 			end
 			cb({ ok = true, status = 200, body = "return {notes=" .. enc(out) .. "}" })
@@ -228,6 +228,18 @@ check("delete ok removes locally", ed.ok == true and #svc._registry.items == n_b
 check("delete unknown -> ok", cmd("note.delete", { id = "ghost" }).ok == true)
 
 -- ── reconcile notes ──────────────────────────────────────────────
+-- app-side move + re-date reflected (names/bodies never come back, C1)
+for _, n in ipairs(server.notes) do
+	if n.id == "note-1" then
+		n.notebook_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+		n.date_on = "2026-12-01"
+	end
+end
+local erm = cmd("registry.refresh", nil)
+check("app-side move+redate reflected",
+	erm.ok == true and item.notebook_id == "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+		and item.notebook_name == "Later" and item.date_on == "2026-12-01")
+
 for i, n in ipairs(server.notes) do
 	if n.id == "note-1" then
 		table.remove(server.notes, i)

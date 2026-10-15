@@ -296,6 +296,21 @@ local function findTask(key)
 	return registry.findById(reg, key) or registry.findBySourceId(reg, key)
 end
 
+-- Reverse lookup: UUID back to the display name configured in settings.
+-- Lets app-side moves (area/notebook changed in Lunatask) show up on refresh.
+-- Returns nil when the UUID is not in the map.
+local function reverseName(map, uuid)
+	if type(map) ~= "table" or type(uuid) ~= "string" then
+		return nil
+	end
+	for name, id in pairs(map) do
+		if type(id) == "string" and noctalia.string.trim(id) == uuid then
+			return name
+		end
+	end
+	return nil
+end
+
 local function syncTaskFromResponse(item, remote)
 	-- Metadata comes from the response; titles/bodies only from our edits
 	-- (the API never returns them, C1).
@@ -306,6 +321,10 @@ local function syncTaskFromResponse(item, remote)
 		item.priority = remote.priority
 	end
 	item.scheduled_on = remote.scheduled_on
+	if remote.area_id ~= nil then
+		item.area_id = remote.area_id
+		item.area_name = reverseName(noctalia.getConfig("areas"), remote.area_id)
+	end
 	item.state = "synced"
 	item.last_error = nil
 	item.updated_at = ids.utcNow()
@@ -850,7 +869,12 @@ local function reconcile(done)
 			local taskMissing = reconcileKind(regTasks, remoteTasks, function(item, remote)
 				syncTaskFromResponse(item, remote)
 			end)
-			local noteMissing = reconcileKind(regNotes, remoteNotes, function(item, _remote)
+			local noteMissing = reconcileKind(regNotes, remoteNotes, function(item, remote)
+				-- notebook_id and date_on come back from the API (names and
+				-- bodies never do, C1).
+				item.notebook_id = remote.notebook_id
+				item.notebook_name = reverseName(noctalia.getConfig("notebooks"), remote.notebook_id)
+				item.date_on = remote.date_on
 				item.state = "synced"
 				item.last_error = nil
 				item.updated_at = ids.utcNow()
