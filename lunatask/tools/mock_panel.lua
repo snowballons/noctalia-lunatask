@@ -55,6 +55,7 @@ noctalia = {
 	end,
 	log = function(m) LOG[#LOG + 1] = m end,
 	openSettings = function() end,
+	setUpdateInterval = function(_) end,
 	state = {
 		set = function(k, v) state_store[k] = v end,
 		get = function(k) return state_store[k] end,
@@ -211,6 +212,70 @@ check("notes stub", has_text(renders[#renders], "ui.panel.notes_stub"))
 safe_call("journal tab", find_button(renders[#renders], "ui.tab.journal").props.onClick)
 check("journal stub", has_text(renders[#renders], "ui.panel.journal_stub"))
 safe_call("back to tasks", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
+
+-- ── M3: edit flow (diff-only submit) ───────────────────────────────
+safe_call("synced for edit", fire, "registry", { schema = 1, items = {
+	{ kind = "task", id = "rid-1", source_id = "nct-1", state = "synced",
+		title = "Task one", status = "later", priority = 0, scheduled_on = nil, body = nil },
+} })
+tree = renders[#renders]
+local editbtn = find_button(tree, "ui.panel.edit")
+check("edit button on synced row", editbtn ~= nil)
+safe_call("open edit", editbtn.props.onClick)
+tree = renders[#renders]
+local etitle = find_input(tree, "ui.panel.form.title")
+check("edit title input present", etitle ~= nil)
+safe_call("change title only", etitle.props.onChange, "Task uno")
+local savebtn = find_button(tree, "ui.panel.save")
+check("save button found", savebtn ~= nil)
+safe_call("click save", savebtn.props.onClick)
+local cmdu = state_store["cmd.panel"]
+check("update cmd id", cmdu.op == "task.update" and cmdu.args.id == "rid-1")
+local diffkeys = {}
+for k, _ in pairs(cmdu.args.changes) do
+	diffkeys[#diffkeys + 1] = k
+end
+check("diff-only changes (name)", #diffkeys == 1 and cmdu.args.changes.name == "Task uno")
+safe_call("evt update ok", fire, "evt.panel", { seq = cmdu.seq, op = "task.update", ok = true })
+tree = renders[#renders]
+check("edit closed + saved notice", find_input(tree, "ui.panel.form.title") == nil and has_text(tree, "ui.panel.updated"))
+
+-- ── M3: one-click complete ───────────────────────────────────────
+local compbtn = find_button(tree, "ui.panel.complete")
+check("complete button found", compbtn ~= nil)
+safe_call("click complete", compbtn.props.onClick)
+local cmdc = state_store["cmd.panel"]
+check("complete sends status only", cmdc.op == "task.update" and cmdc.args.changes.status == "completed")
+safe_call("evt complete ok", fire, "evt.panel", { seq = cmdc.seq, op = "task.update", ok = true })
+
+-- ── M3: two-step delete ──────────────────────────────────────────
+local delbtn = find_button(renders[#renders], "ui.panel.delete")
+check("delete button found", delbtn ~= nil)
+safe_call("first click arms", delbtn.props.onClick)
+local cmd_armed = state_store["cmd.panel"]
+check("first click sends nothing", cmd_armed.seq == cmdc.seq)
+tree = renders[#renders]
+local confirmbtn = find_button(tree, "ui.delete.confirm")
+check("confirm delete shown", confirmbtn ~= nil)
+safe_call("second click deletes", confirmbtn.props.onClick)
+local cmdd = state_store["cmd.panel"]
+check("delete cmd", cmdd.op == "task.delete" and cmdd.args.id == "rid-1")
+safe_call("evt delete ok", fire, "evt.panel", { seq = cmdd.seq, op = "task.delete", ok = true })
+check("deleted notice", has_text(renders[#renders], "ui.panel.deleted"))
+
+-- ── M3: orphan forget + refresh display ──────────────────────────
+safe_call("orphan watch", fire, "registry", { schema = 1, items = {
+	{ kind = "task", id = "rid-9", source_id = "nct-9", state = "orphaned", title = "Gone" },
+} })
+tree = renders[#renders]
+check("orphan hint shown", has_text(tree, "ui.panel.orphaned_hint"))
+local refresher = find_button(tree, "ui.panel.refresh")
+safe_call("click refresh", refresher.props.onClick)
+local cmdr = state_store["cmd.panel"]
+check("refresh cmd", cmdr.op == "registry.refresh")
+safe_call("evt refresh ok/2 orphaned", fire, "evt.panel",
+	{ seq = cmdr.seq, op = "registry.refresh", ok = true, orphaned = 2 })
+check("refresh orphan count shown", has_text(renders[#renders], "ui.panel.refresh_ok ui.panel.refresh_orphaned"))
 
 -- ── render-while-closed ──────────────────────────────────────────
 panel_open = false

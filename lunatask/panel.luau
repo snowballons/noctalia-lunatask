@@ -6,6 +6,8 @@ local STATUS_OPTS = { "later", "next", "started", "waiting", "completed" }
 local PRIO_LABELS = { "Lowest (-2)", "Low (-1)", "Normal (0)", "High (1)", "Highest (2)" }
 local PRIO_VALUES = { -2, -1, 0, 1, 2 }
 
+noctalia.setUpdateInterval(1000)
+
 local seq = 0
 local pending = nil -- { seq, op } while a command is in flight
 local connText = noctalia.tr("ui.panel.status.unknown")
@@ -22,6 +24,15 @@ local fStatusIdx = 1
 local fPrioIdx = 3
 local selectEcho = "-"
 local open = false -- true between onOpen and onClose; watchers skip render when closed
+local editingSid = nil -- source_id of the task being edited (edit form open)
+local eKey = 0 -- reseed key for edit inputs
+local eTitle = ""
+local eNote = ""
+local eDate = ""
+local eStatusIdx = 1
+local ePrioIdx = 3
+local delArmSid = nil -- source_id with armed delete confirm
+local delArmLeft = 0 -- seconds left before the confirm reverts
 
 -- Forward declaration: every onClick/onChange closure below calls render(),
 -- but render() is defined at the bottom. Without this, those closures would
@@ -56,14 +67,27 @@ local function areaNames()
 	return names
 end
 
-local function statusDefaultIdx()
-	local dflt = noctalia.getConfig("default_task_status")
+local function statusIdxFor(value)
 	for i, s in ipairs(STATUS_OPTS) do
-		if s == dflt then
+		if s == value then
 			return i
 		end
 	end
 	return 1
+end
+
+local function prioIdxFor(value)
+	for i, p in ipairs(PRIO_VALUES) do
+		if p == value then
+			return i
+		end
+	end
+	return 3
+end
+
+local function statusDefaultIdx()
+	local dflt = noctalia.getConfig("default_task_status")
+	return statusIdxFor(dflt)
 end
 
 local function glyphFor(state)
@@ -197,6 +221,144 @@ local function formTree()
 	})
 end
 
+local function openEdit(item)
+	editingSid = tostring(item.source_id or item.id)
+	eKey = eKey + 1
+	eTitle = tostring(item.title or "")
+	eStatusIdx = statusIdxFor(item.status)
+	ePrioIdx = prioIdxFor(item.priority)
+	eDate = tostring(item.scheduled_on or "")
+	-- Body only when cached (D6); otherwise start empty and never send it.
+	eNote = tostring(item.body or "")
+	render()
+end
+
+local function submitEdit()
+	local item = nil
+	for _, it in ipairs(regItems) do
+		if tostring(it.source_id or it.id) == editingSid then
+			item = it
+			break
+		end
+	end
+	if item == nil or item.id == nil then
+		editingSid = nil
+		render()
+		return
+	end
+	-- Send only the fields that changed (partial PUT).
+	local changes = {}
+	if eTitle ~= tostring(item.title or "") then
+		changes.name = eTitle
+	end
+	local status = STATUS_OPTS[eStatusIdx] or "later"
+	if status ~= item.status then
+		changes.status = status
+	end
+	local prio = PRIO_VALUES[ePrioIdx]
+	if prio == nil then
+		prio = 0
+	end
+	if prio ~= item.priority then
+		changes.priority = prio
+	end
+	if eDate ~= tostring(item.scheduled_on or "") and eDate ~= "" then
+		changes.scheduled_on = eDate
+	end
+	if item.body ~= nil then
+		if eNote ~= tostring(item.body or "") then
+			changes.note = eNote
+		end
+	elseif eNote ~= "" then
+		changes.note = eNote
+	end
+	local empty = true
+	for _, _ in pairs(changes) do
+		empty = false
+		break
+	end
+	if empty then
+		editingSid = nil
+		render()
+		return
+	end
+	sendCmd("task.update", { id = item.id, changes = changes })
+end
+
+local function editTree()
+	return ui.column({ gap = 8 }, {
+		ui.input({
+			key = "etitle" .. tostring(eKey),
+			value = eTitle,
+			placeholder = noctalia.tr("ui.panel.form.title"),
+			onChange = function(v)
+				eTitle = v
+			end,
+		}),
+		ui.row({ gap = 8 }, {
+			ui.column({ flexGrow = 1 }, {
+				ui.label({ text = noctalia.tr("ui.panel.form.status") }),
+				ui.select({
+					options = STATUS_OPTS,
+					selectedIndex = eStatusIdx,
+					onChange = function(v)
+						eStatusIdx = selIdx(v, #STATUS_OPTS)
+						render()
+					end,
+				}),
+			}),
+			ui.column({ flexGrow = 1 }, {
+				ui.label({ text = noctalia.tr("ui.panel.form.priority") }),
+				ui.select({
+					options = PRIO_LABELS,
+					selectedIndex = ePrioIdx,
+					onChange = function(v)
+						ePrioIdx = selIdx(v, #PRIO_LABELS)
+						render()
+					end,
+				}),
+			}),
+		}),
+		ui.label({ text = noctalia.tr("ui.panel.form.scheduled") }),
+		ui.input({
+			key = "edate" .. tostring(eKey),
+			value = eDate,
+			placeholder = "YYYY-MM-DD",
+			onChange = function(v)
+				eDate = v
+			end,
+		}),
+		ui.label({ text = noctalia.tr("ui.panel.edit_note_hint") }),
+		ui.input({
+			key = "enote" .. tostring(eKey),
+			value = eNote,
+			multiline = true,
+			placeholder = "Markdown",
+			onChange = function(v)
+				eNote = v
+			end,
+		}),
+		ui.row({ justify = "end", gap = 8 }, {
+			ui.button({
+				text = noctalia.tr("ui.panel.cancel"),
+				enabled = pending == nil,
+				onClick = function()
+					editingSid = nil
+					render()
+				end,
+			}),
+			ui.button({
+				text = noctalia.tr("ui.panel.save"),
+				variant = "primary",
+				enabled = pending == nil,
+				onClick = function()
+					submitEdit()
+				end,
+			}),
+		}),
+	})
+end
+
 local function taskRow(item)
 	local key = tostring(item.source_id or item.id or "?")
 	local title = tostring(item.title or item.date_on or "?")
@@ -205,6 +367,52 @@ local function taskRow(item)
 		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1 }),
 		ui.label({ text = meta }),
 	}
+	if item.state == "synced" then
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.edit"),
+			enabled = pending == nil,
+			onClick = function()
+				openEdit(item)
+			end,
+		}))
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.complete"),
+			enabled = pending == nil,
+			onClick = function()
+				sendCmd("task.update", { id = item.id, changes = { status = "completed" } })
+			end,
+		}))
+		local deleting = (delArmSid ~= nil and delArmSid == key)
+		local confirm = noctalia.getConfig("confirm_delete")
+		if confirm == false then
+			confirm = false
+		else
+			confirm = true
+		end
+		table.insert(cells, ui.button({
+			text = deleting and noctalia.tr("ui.delete.confirm") or noctalia.tr("ui.panel.delete"),
+			variant = deleting and "destructive" or nil,
+			enabled = pending == nil,
+			onClick = function()
+				if not confirm or (delArmSid ~= nil and delArmSid == key) then
+					delArmSid = nil
+					sendCmd("task.delete", { id = item.id })
+				else
+					delArmSid = key
+					delArmLeft = 5
+					render()
+				end
+			end,
+		}))
+	elseif item.state == "orphaned" then
+		table.insert(cells, ui.button({
+			text = noctalia.tr("ui.panel.forget"),
+			enabled = pending == nil,
+			onClick = function()
+				sendCmd("registry.forget", { id = item.source_id })
+			end,
+		}))
+	end
 	if item.state == "failed" then
 		table.insert(cells, ui.button({
 			text = noctalia.tr("ui.panel.retry"),
@@ -227,6 +435,9 @@ local function taskRow(item)
 	end
 	if item.note_dropped then
 		table.insert(rows, ui.label({ text = noctalia.tr("ui.panel.note_dropped") }))
+	end
+	if item.state == "orphaned" then
+		table.insert(rows, ui.label({ text = noctalia.tr("ui.panel.orphaned_hint") }))
 	end
 	return ui.column({ gap = 2 }, rows)
 end
@@ -259,6 +470,10 @@ local function tasksTab()
 		}))
 	end
 	table.insert(parts, ui.separator({}))
+	if editingSid ~= nil then
+		table.insert(parts, editTree())
+		table.insert(parts, ui.separator({}))
+	end
 	if #regItems == 0 then
 		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
 	else
@@ -374,6 +589,36 @@ noctalia.state.watch("evt.panel", function(msg)
 			local kind = (msg.err and msg.err.kind) or "?"
 			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
 		end
+	elseif msg.op == "task.update" then
+		if msg.ok then
+			editingSid = nil
+			lastResult = noctalia.tr("ui.panel.updated")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "task.delete" then
+		if msg.ok then
+			delArmSid = nil
+			lastResult = noctalia.tr("ui.panel.deleted")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "registry.refresh" then
+		if msg.ok then
+			if msg.warning ~= nil then
+				lastResult = tostring(msg.warning)
+			elseif (msg.orphaned or 0) > 0 then
+				lastResult = noctalia.tr("ui.panel.refresh_ok") .. " "
+					.. noctalia.tr("ui.panel.refresh_orphaned", { n = tostring(msg.orphaned) })
+			else
+				lastResult = noctalia.tr("ui.panel.refresh_ok")
+			end
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
 	elseif msg.ok ~= true and msg.err ~= nil and msg.err.kind ~= nil then
 		lastResult = noctalia.tr("ui.panel.status.fail", { kind = tostring(msg.err.kind) })
 	end
@@ -400,4 +645,16 @@ end
 function onClose()
 	open = false
 	pending = nil
+	delArmSid = nil
+end
+
+-- Delete-confirm countdown: an armed "Confirm delete" reverts after ~5 s.
+function update()
+	if delArmSid ~= nil and open then
+		delArmLeft = delArmLeft - 1
+		if delArmLeft <= 0 then
+			delArmSid = nil
+			render()
+		end
+	end
 end

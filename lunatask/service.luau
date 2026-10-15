@@ -78,11 +78,13 @@ local function reply(sender, seq, op, result)
 		op = op,
 		ok = result.ok == true,
 		err = result.err,
+		orphaned = result.orphaned,
+		warning = result.warning,
 	})
 end
 
 -- Per-op logic. M1: ping, registry.refresh, registry.forget.
--- M2: task.create, task.retry. M3+: task.update/delete, note.*, journal.create.
+-- M2: task.create, task.retry. M3: task.update, task.delete, real reconcile.
 local VALID_STATUS = { later = true, next = true, started = true, waiting = true, completed = true }
 
 local function adoptCreate(item, id)
@@ -278,6 +280,265 @@ local function taskRetry(args, done)
 		note = item.body,
 	}, item, done)
 end
+
+-- Stable lookup: remote id when synced, source_id before first sync.
+local function findTask(key)
+	if type(key) ~= "string" or key == "" then
+		return nil
+	end
+	return registry.findById(reg, key) or registry.findBySourceId(reg, key)
+end
+
+local function syncTaskFromResponse(item, remote)
+	-- Metadata comes from the response; titles/bodies only from our edits
+	-- (the API never returns them, C1).
+	if remote.status ~= nil then
+		item.status = remote.status
+	end
+	if remote.priority ~= nil then
+		item.priority = remote.priority
+	end
+	item.scheduled_on = remote.scheduled_on
+	item.state = "synced"
+	item.last_error = nil
+	item.updated_at = ids.utcNow()
+end
+
+local function taskUpdate(args, done)
+	args = args or {}
+	local item = findTask(args.id)
+	if not item or item.kind ~= "task" then
+		done({ ok = false, err = { kind = "not_found", status = 0, message = "unknown id" } })
+		return
+	end
+	if item.id == nil then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "not created yet" } })
+		return
+	end
+	local changes = args.changes
+	if type(changes) ~= "table" then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "missing changes" } })
+		return
+	end
+	-- Validate first, send only the changed attributes (partial PUT).
+	local payload = {}
+	local count = 0
+	if changes.name ~= nil then
+		local name = noctalia.string.trim(tostring(changes.name))
+		if name == "" then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "title required" } })
+			return
+		end
+		payload.name = name
+		count = count + 1
+	end
+	if changes.note ~= nil then
+		payload.note = tostring(changes.note)
+		count = count + 1
+	end
+	if changes.status ~= nil then
+		if not VALID_STATUS[changes.status] then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "bad status" } })
+			return
+		end
+		payload.status = changes.status
+		count = count + 1
+	end
+	if changes.priority ~= nil then
+		local p = changes.priority
+		if type(p) ~= "number" or p < -2 or p > 2 or p ~= math.floor(p) then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "bad priority" } })
+			return
+		end
+		payload.priority = p
+		count = count + 1
+	end
+	if changes.scheduled_on ~= nil then
+		if not ids.isDate(changes.scheduled_on) then
+			done({ ok = false, err = { kind = "validation", status = 0, message = "bad date" } })
+			return
+		end
+		payload.scheduled_on = changes.scheduled_on
+		count = count + 1
+	end
+	if count == 0 then
+		done({ ok = true })
+		return
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local cacheBodies = noctalia.getConfig("cache_bodies") == true
+	item.state = "pending_update"
+	registry.save(reg)
+	publishRegistry()
+	api.request(token, "PUT", "/tasks/" .. item.id, payload, function(r)
+		if r.ok and r.data and r.data.task then
+			if payload.name then
+				item.title = payload.name
+			end
+			if payload.note ~= nil then
+				item.has_note = true
+				item.note_dropped = nil
+				item.body = cacheBodies and payload.note or nil
+			end
+			syncTaskFromResponse(item, r.data.task)
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true })
+		elseif r.status == 404 then
+			item.state = "orphaned"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = { kind = "not_found", status = 404, message = "gone from Lunatask" } })
+		else
+			item.state = "failed"
+			item.last_error = r.err and r.err.kind or "server"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = r.err })
+		end
+	end)
+end
+
+local function taskDelete(args, done)
+	local key = args and args.id
+	local item = findTask(key)
+	-- Idempotent success: unknown locally means nothing to delete.
+	if not item or item.kind ~= "task" then
+		done({ ok = true })
+		return
+	end
+	-- Never synced remotely: drop locally, goal achieved.
+	if item.id == nil then
+		registry.removeById(reg, item.source_id)
+		registry.save(reg)
+		publishRegistry()
+		done({ ok = true })
+		return
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	item.state = "pending_delete"
+	registry.save(reg)
+	publishRegistry()
+	api.request(token, "DELETE", "/tasks/" .. item.id, nil, function(r)
+		if r.ok or r.status == 404 then
+			-- 404 on delete is success: the goal (gone) is achieved.
+			registry.removeById(reg, item.source_id)
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true })
+		else
+			item.state = "failed"
+			item.last_error = r.err and r.err.kind or "server"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = r.err })
+		end
+	end)
+end
+
+-- Reconciliation (§7.5): refresh metadata from the server, mark items that
+-- vanished elsewhere as orphaned. Never mutates on transport failure, and
+-- never mass-orphans on a suspiciously empty response.
+local function reconcileKind(items, remoteById, apply, done_count)
+	local missing = {}
+	for _, item in ipairs(items) do
+		if item.id ~= nil and item.state ~= "orphaned" and item.state ~= "pending_create"
+			and item.state ~= "pending_update" and item.state ~= "pending_delete" then
+			local remote = remoteById[item.id]
+			if remote then
+				apply(item, remote)
+			else
+				missing[#missing + 1] = item
+			end
+		end
+	end
+	return missing
+end
+
+local function reconcile(done)
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local sourceTag = noctalia.getConfig("source_tag")
+	if type(sourceTag) ~= "string" or sourceTag == "" then
+		sourceTag = "noctalia"
+	end
+	api.listTasks(token, sourceTag, function(tr)
+		if not tr.ok then
+			done({ ok = false, err = tr.err })
+			return
+		end
+		api.listNotes(token, sourceTag, function(nr)
+			if not nr.ok then
+				done({ ok = false, err = nr.err })
+				return
+			end
+			local remoteTasks = {}
+			for _, t in ipairs(tr.tasks) do
+				if t.id ~= nil then
+					remoteTasks[t.id] = t
+				end
+			end
+			local remoteNotes = {}
+			for _, n in ipairs(nr.notes) do
+				if n.id ~= nil then
+					remoteNotes[n.id] = n
+				end
+			end
+			local regTasks = {}
+			local regNotes = {}
+			for _, item in ipairs(reg.items) do
+				if item.kind == "task" then
+					regTasks[#regTasks + 1] = item
+				elseif item.kind == "note" then
+					regNotes[#regNotes + 1] = item
+				end
+			end
+			local taskMissing = reconcileKind(regTasks, remoteTasks, function(item, remote)
+				syncTaskFromResponse(item, remote)
+			end)
+			local noteMissing = reconcileKind(regNotes, remoteNotes, function(item, _remote)
+				item.state = "synced"
+				item.last_error = nil
+				item.updated_at = ids.utcNow()
+			end)
+			-- Orphan guard: a response that wrongly looks empty (e.g. changed
+			-- source_tag) must not wipe the registry. Refuse to orphan the
+			-- majority, and say so.
+			local warning = nil
+			local function applyMissing(missing)
+				local orphaned = 0
+				if #missing > 0 and not (#regTasks + #regNotes >= 3 and #missing > (#regTasks + #regNotes) / 2) then
+					for _, item in ipairs(missing) do
+						item.state = "orphaned"
+						item.updated_at = ids.utcNow()
+						orphaned = orphaned + 1
+					end
+				elseif #missing > 0 then
+					warning = "refresh skipped orphaning (" .. tostring(#missing) .. " missing)"
+				end
+				return orphaned
+			end
+			local orphaned = applyMissing(taskMissing) + applyMissing(noteMissing)
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true, orphaned = orphaned, warning = warning })
+		end)
+	end)
+end
 local function handleOp(op, args, done)
 	if op == "ping" then
 		ping(function(r)
@@ -285,9 +546,7 @@ local function handleOp(op, args, done)
 			done(r)
 		end)
 	elseif op == "registry.refresh" then
-		-- M1: republish only. M3 adds server reconciliation (§7.5).
-		publishRegistry()
-		done({ ok = true })
+		reconcile(done)
 	elseif op == "registry.forget" then
 		local id = args and args.id
 		if type(id) ~= "string" or id == "" then
@@ -305,6 +564,10 @@ local function handleOp(op, args, done)
 		taskCreate(args, done)
 	elseif op == "task.retry" then
 		taskRetry(args, done)
+	elseif op == "task.update" then
+		taskUpdate(args, done)
+	elseif op == "task.delete" then
+		taskDelete(args, done)
 	else
 		done({ ok = false, err = { kind = "validation", status = 0, message = "unknown op" } })
 	end
@@ -372,8 +635,9 @@ function onIpc(event, _payload)
 			end
 		end)
 	elseif event == "refresh" then
-		publishRegistry()
-		noctalia.log("registry republished items=" .. tostring(#reg.items))
+		reconcile(function(r)
+			noctalia.log("refresh ok=" .. tostring(r.ok) .. " orphaned=" .. tostring(r.orphaned or 0))
+		end)
 	end
 end
 
