@@ -47,6 +47,8 @@ local neTitle = ""
 local neContent = ""
 local neDate = ""
 local neBookIdx = 1
+local neBookAlts = {} -- move targets: configured names except the current one
+local neKeepName = "" -- display name of where the note currently lives
 local jKey = 0
 local jDate = ids.today()
 local jName = ""
@@ -582,12 +584,15 @@ local function openNEdit(item)
 	neTitle = tostring(item.title or "")
 	neDate = tostring(item.date_on or "")
 	neContent = tostring(item.body or "")
+	-- First option is always "keep": the form must never move a note the user
+	-- didn't ask to move (whitespace/stale names must not silently remap).
 	neBookIdx = 1
-	local names = nbNames()
-	for i, n in ipairs(names) do
-		if n == item.notebook_name then
-			neBookIdx = i
-			break
+	neBookAlts = {}
+	neKeepName = tostring(item.notebook_name or noctalia.tr("ui.panel.unfiled"))
+	local current = noctalia.string.trim(tostring(item.notebook_name or ""))
+	for _, n in ipairs(nbNames()) do
+		if noctalia.string.trim(n) ~= current then
+			neBookAlts[#neBookAlts + 1] = n
 		end
 	end
 	render()
@@ -610,10 +615,8 @@ local function submitNEdit()
 	if neTitle ~= tostring(item.title or "") then
 		changes.name = neTitle
 	end
-	local names = nbNames()
-	local selName = names[neBookIdx]
-	if selName ~= nil and selName ~= item.notebook_name then
-		changes.notebook = selName
+	if neBookIdx > 1 and neBookAlts[neBookIdx - 1] ~= nil then
+		changes.notebook = neBookAlts[neBookIdx - 1]
 	end
 	if neDate ~= tostring(item.date_on or "") and neDate ~= "" then
 		changes.date_on = neDate
@@ -652,16 +655,20 @@ local function nEditTree()
 			end,
 		}),
 	}
-	if #names > 0 then
-		if neBookIdx < 1 or neBookIdx > #names then
+	if #nbNames() > 0 then
+		local opts = { noctalia.tr("ui.panel.keep_notebook", { name = neKeepName }) }
+		for _, n in ipairs(neBookAlts) do
+			opts[#opts + 1] = n
+		end
+		if neBookIdx < 1 or neBookIdx > #opts then
 			neBookIdx = 1
 		end
 		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.form.notebook") }))
 		table.insert(parts, ui.select({
-			options = names,
+			options = opts,
 			selectedIndex = neBookIdx - 1,
 			onChange = function(v)
-				neBookIdx = selIdx(v, #names)
+				neBookIdx = selIdx(v, #opts)
 				render()
 			end,
 		}))

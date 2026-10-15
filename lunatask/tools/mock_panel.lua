@@ -41,6 +41,9 @@ noctalia = {
 		if key == "areas" then
 			return { Work = "11111111-2222-3333-4444-555555555555" }
 		end
+		if key == "notebooks" then
+			return { test = "t-uuid", unified = "u-uuid" }
+		end
 		if key == "default_task_status" then
 			return "later"
 		end
@@ -407,6 +410,41 @@ tree = renders[#renders]
 check("edit opened on linked item", find_input(tree, "ui.panel.form.title") ~= nil)
 check("edit prefilled", find_input(tree, "ui.panel.form.title").props.value == "Deep link me")
 check("open_item consumed", state_store["open_item"] == nil)
+
+-- ── regression: stale/whitespace notebook name never moves the note ──
+safe_call("stale-name watch", fire, "registry", { schema = 1, items = {
+	{ kind = "note", id = "rn-2", source_id = "nct-n3", state = "synced",
+		title = "Unified note", notebook_name = "unified " },
+} })
+safe_call("notes tab again", find_button(renders[#renders], "ui.tab.notes").props.onClick)
+tree = renders[#renders]
+safe_call("open stale edit", find_button(tree, "ui.panel.edit").props.onClick)
+tree = renders[#renders]
+safe_call("rename stale note", find_input(tree, "ui.panel.form.title").props.onChange, "Unified note 2")
+safe_call("save stale note", find_button(tree, "ui.panel.save").props.onClick)
+local cmds = state_store["cmd.panel"]
+local sdiff = {}
+for k, _ in pairs(cmds.args.changes) do
+	sdiff[#sdiff + 1] = k
+end
+check("stale name sends no move", cmds.op == "note.update" and #sdiff == 1 and cmds.args.changes.name == "Unified note 2")
+safe_call("evt stale ok", fire, "evt.panel", { seq = cmds.seq, op = "note.update", ok = true })
+
+-- explicit move still works via the second option
+safe_call("reopen for move", find_button(renders[#renders], "ui.panel.edit").props.onClick)
+tree = renders[#renders]
+local nbsel = nil
+for _, n in ipairs(find_selects(tree)) do
+	if n.props.options[1] == "ui.panel.keep_notebook" then
+		nbsel = n
+	end
+end
+check("keep-first notebook select", nbsel ~= nil)
+safe_call("pick other notebook", nbsel.props.onChange, "1")
+safe_call("save move", find_button(tree, "ui.panel.save").props.onClick)
+local cmdm = state_store["cmd.panel"]
+check("explicit move sends notebook", cmdm.args.changes.notebook == "test")
+safe_call("evt move ok", fire, "evt.panel", { seq = cmdm.seq, op = "note.update", ok = true })
 
 -- ── protocol hardening: gen stamp, svc restart, pending timeout ────
 state_store["svc_boot"] = 777
