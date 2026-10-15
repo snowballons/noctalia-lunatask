@@ -16,6 +16,13 @@ end
 
 publishRegistry()
 
+-- Boot generation: entries reload independently (a .luau edit hot-reloads one
+-- VM, not the plugin). A reloaded panel restarts its seq counter at 0, which
+-- the seq gate below would drop forever. The panel stamps each command with
+-- the generation it saw; a mismatch resyncs instead of dropping.
+local bootGen = noctalia.nowMs()
+noctalia.state.set("svc_boot", bootGen)
+
 -- ── token resolution (D3: env -> file -> setting) ───────────────
 local function resolveToken()
 	local env = noctalia.getenv("LUNATASK_ACCESS_TOKEN")
@@ -587,7 +594,15 @@ local function pump()
 end
 
 local function enqueue(sender, msg)
-	if type(msg) ~= "table" or type(msg.seq) ~= "number" or msg.seq <= (lastSeq[sender] or 0) then
+	if type(msg) ~= "table" or type(msg.seq) ~= "number" then
+		return
+	end
+	if msg.gen ~= bootGen then
+		-- Sender restarted (or predates generations): its counter restarted
+		-- too, so resync instead of dropping everything it sends.
+		lastSeq[sender] = 0
+	end
+	if msg.seq <= (lastSeq[sender] or 0) then
 		return
 	end
 	lastSeq[sender] = msg.seq

@@ -7,6 +7,7 @@ local PLUGIN_DIR = (debug.getinfo(1, "S").source:match("@(.*/)") or "./"):gsub("
 local renders = {} -- panel.render trees, in order
 local panel_open = false
 local render_after_close = 0
+local mock_now = 1000
 local state_store = {
 	registry = { schema = 1, items = {} },
 }
@@ -56,6 +57,7 @@ noctalia = {
 	log = function(m) LOG[#LOG + 1] = m end,
 	openSettings = function() end,
 	setUpdateInterval = function(_) end,
+	nowMs = function() return mock_now end,
 	state = {
 		set = function(k, v) state_store[k] = v end,
 		get = function(k) return state_store[k] end,
@@ -289,6 +291,27 @@ check("refresh cmd", cmdr.op == "registry.refresh")
 safe_call("evt refresh ok/2 orphaned", fire, "evt.panel",
 	{ seq = cmdr.seq, op = "registry.refresh", ok = true, orphaned = 2 })
 check("refresh orphan count shown", has_text(renders[#renders], "ui.panel.refresh_ok ui.panel.refresh_orphaned"))
+
+-- ── protocol hardening: gen stamp, svc restart, pending timeout ────
+state_store["svc_boot"] = 777
+panel_open = true
+safe_call("reopen2", onOpen, "")
+tree = renders[#renders]
+local pingbtn = find_button(tree, "ui.panel.ping")
+safe_call("click ping", pingbtn.props.onClick)
+local cmdp = state_store["cmd.panel"]
+check("cmd stamped with generation", cmdp.gen == 777)
+-- service restarts: new boot, in-flight answer lost -> panel un-sticks
+safe_call("svc reboot watch", fire, "svc_boot", 778)
+local pingbtn2 = find_button(renders[#renders], "ui.panel.ping")
+check("ping re-enabled after reboot", pingbtn2.props.enabled ~= false)
+safe_call("click ping again", pingbtn2.props.onClick)
+local cmdp2 = state_store["cmd.panel"]
+check("new command after reboot", cmdp2.seq == cmdp.seq + 1)
+-- answer never arrives -> 30 s watchdog frees the form
+mock_now = mock_now + 31000
+safe_call("watchdog tick", update)
+check("timeout notice shown", has_text(renders[#renders], "err.timeout"))
 
 -- ── render-while-closed ──────────────────────────────────────────
 panel_open = false

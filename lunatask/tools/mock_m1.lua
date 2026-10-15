@@ -92,6 +92,10 @@ noctalia = {
 }
 
 local function fire(key, msg)
+	-- Emulate the current panel: stamp the generation it sees.
+	if (key == "cmd.panel" or key == "cmd.launcher") and type(msg) == "table" and msg.gen == nil then
+		msg.gen = state_store["svc_boot"]
+	end
 	for _, fn in ipairs(watchers[key] or {}) do
 		fn(msg)
 	end
@@ -149,6 +153,12 @@ fire("cmd.panel", { seq = 1, op = "ping" }) -- stale: same seq
 check("stale seq ignored", http_calls == 1)
 fire("cmd.panel", { seq = 0, op = "ping" }) -- stale: lower seq
 check("lower seq ignored", http_calls == 1)
+
+-- generation resync: sender restarted, counter back at 0, unseen generation
+fire("cmd.panel", { seq = 1, op = "ping", gen = -1 })
+check("stale gen resyncs + accepts", http_calls == 2)
+fire("cmd.panel", { seq = 1, op = "ping" }) -- same gen, old seq: rejected
+check("same-gen stale still rejected", http_calls == 2)
 
 fire("cmd.panel", { seq = 2, op = "bogus-op" })
 local e2 = state_store["evt.panel"]

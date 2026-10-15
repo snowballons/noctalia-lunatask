@@ -109,9 +109,11 @@ function sendCmd(op, args)
 		return
 	end
 	seq = seq + 1
-	pending = { seq = seq, op = op }
+	pending = { seq = seq, op = op, since = noctalia.nowMs() }
 	render()
-	noctalia.state.set("cmd.panel", { seq = seq, op = op, args = args })
+	-- gen: the service generation seen by this panel (§8.3). Lets the service
+	-- tell a restarted counter (seq back at 0) apart from a duplicate.
+	noctalia.state.set("cmd.panel", { seq = seq, op = op, args = args, gen = noctalia.state.get("svc_boot") })
 end
 
 local function submitTask()
@@ -567,6 +569,18 @@ noctalia.state.watch("registry", function(msg)
 	end
 end)
 
+-- Service restarted (or reloaded): our in-flight command died with its old VM.
+-- Un-stick the submit buttons instead of staying disabled forever.
+noctalia.state.watch("svc_boot", function(_msg)
+	if pending ~= nil then
+		pending = nil
+		lastResult = noctalia.tr("err.timeout")
+		if open then
+			render()
+		end
+	end
+end)
+
 noctalia.state.watch("evt.panel", function(msg)
 	if type(msg) ~= "table" or pending == nil then
 		return
@@ -656,12 +670,22 @@ function onClose()
 end
 
 -- Delete-confirm countdown: an armed "Confirm delete" reverts after ~5 s.
+-- Pending watchdog: an answer that never arrives (service reloaded mid-flight
+-- and the boot watch missed it) must not disable submits forever.
 function update()
-	if delArmSid ~= nil and open then
+	if not open then
+		return
+	end
+	if delArmSid ~= nil then
 		delArmLeft = delArmLeft - 1
 		if delArmLeft <= 0 then
 			delArmSid = nil
 			render()
 		end
+	end
+	if pending ~= nil and (noctalia.nowMs() - (pending.since or 0)) > 30000 then
+		pending = nil
+		lastResult = noctalia.tr("err.timeout")
+		render()
 	end
 end
