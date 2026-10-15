@@ -39,20 +39,22 @@ local delArmLeft = 0 -- seconds left before the confirm reverts
 -- resolve a (nil) global instead of the local and crash on first click.
 local render
 
--- Defensive select index: works whether onChange passes a 0- or 1-based
--- index string (V-04 still open; this helper is correct under either).
+-- Select index base (V-04, resolved live Oct 2026): ui.select is 0-BASED,
+-- both for the selectedIndex prop and the onChange value. Internals stay
+-- 1-based Lua; convert at the boundary (outgoing -1, incoming +1).
 local function selIdx(raw, n)
 	local i = tonumber(raw)
 	if i == nil then
 		return 1
 	end
-	if i >= 1 and i <= n then
-		return i
+	i = math.floor(i)
+	if i < 0 then
+		return 1
 	end
-	if i >= 0 and i < n then
+	if i < n then
 		return i + 1
 	end
-	return 1
+	return n
 end
 
 local function areaNames()
@@ -149,7 +151,7 @@ local function formTree()
 				ui.label({ text = noctalia.tr("ui.panel.form.area") }),
 				ui.select({
 					options = names,
-					selectedIndex = fAreaIdx,
+					selectedIndex = fAreaIdx - 1,
 					onChange = function(v)
 						fAreaIdx = selIdx(v, #names)
 						render()
@@ -160,7 +162,7 @@ local function formTree()
 				ui.label({ text = noctalia.tr("ui.panel.form.status") }),
 				ui.select({
 					options = STATUS_OPTS,
-					selectedIndex = fStatusIdx,
+					selectedIndex = fStatusIdx - 1,
 					onChange = function(v)
 						fStatusIdx = selIdx(v, #STATUS_OPTS)
 						render()
@@ -173,7 +175,7 @@ local function formTree()
 				ui.label({ text = noctalia.tr("ui.panel.form.priority") }),
 				ui.select({
 					options = PRIO_LABELS,
-					selectedIndex = fPrioIdx,
+					selectedIndex = fPrioIdx - 1,
 					onChange = function(v)
 						fPrioIdx = selIdx(v, #PRIO_LABELS)
 						render()
@@ -300,7 +302,7 @@ local function editTree()
 				ui.label({ text = noctalia.tr("ui.panel.form.status") }),
 				ui.select({
 					options = STATUS_OPTS,
-					selectedIndex = eStatusIdx,
+					selectedIndex = eStatusIdx - 1,
 					onChange = function(v)
 						eStatusIdx = selIdx(v, #STATUS_OPTS)
 						render()
@@ -311,7 +313,7 @@ local function editTree()
 				ui.label({ text = noctalia.tr("ui.panel.form.priority") }),
 				ui.select({
 					options = PRIO_LABELS,
-					selectedIndex = ePrioIdx,
+					selectedIndex = ePrioIdx - 1,
 					onChange = function(v)
 						ePrioIdx = selIdx(v, #PRIO_LABELS)
 						render()
@@ -492,7 +494,7 @@ local function tasksTab()
 	table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.diag.select_hint") }))
 	table.insert(parts, ui.select({
 		options = { "alpha", "beta", "gamma" },
-		selectedIndex = 1,
+		selectedIndex = 0,
 		onChange = function(v)
 			selectEcho = tostring(v)
 			render()
