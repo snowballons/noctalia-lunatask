@@ -149,6 +149,25 @@ local function has_text(tree, text)
 	return false
 end
 
+local function has_key_prefix(tree, prefix)
+	for _, n in ipairs(nodes(tree)) do
+		if type(n.props.key) == "string" and n.props.key:sub(1, #prefix) == prefix then
+			return true
+		end
+	end
+	return false
+end
+
+local function count_type(tree, ctype)
+	local n = 0
+	for _, x in ipairs(nodes(tree)) do
+		if x.type == ctype then
+			n = n + 1
+		end
+	end
+	return n
+end
+
 local function safe_call(name, fn, ...)
 	local ok, err = pcall(fn, ...)
 	check(name .. " (no error)", ok, err)
@@ -181,11 +200,13 @@ newbtn = newbtn or find_button(tree, "ui.panel.new_task")
 check("new task button found", newbtn ~= nil)
 safe_call("click new task", newbtn.props.onClick)
 tree = renders[#renders]
+check("form hides list rows", not has_key_prefix(tree, "reg-"))
+check("single scroll container", count_type(tree, "scroll") == 1)
 local title_in = find_input(tree, "ui.panel.form.title")
 check("form title input present", title_in ~= nil)
 safe_call("type title", title_in.props.onChange, "Buy milk")
 local sels = find_selects(tree)
-check("form has 3 selects + 1 diagnostic", #sels == 4)
+check("form has 3 selects", #sels == 3)
 safe_call("area select change", sels[1].props.onChange, "1")
 -- V-04 (0-based host): incoming "0" -> internal 2nd -> outgoing 0.
 safe_call("area select zero", sels[1].props.onChange, "0")

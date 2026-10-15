@@ -24,7 +24,6 @@ local fDate = ""
 local fAreaIdx = 1
 local fStatusIdx = 1
 local fPrioIdx = 3
-local selectEcho = "-"
 local open = false -- true between onOpen and onClose; watchers skip render when closed
 local editingSid = nil -- source_id of the task being edited (edit form open)
 local eKey = 0 -- reseed key for edit inputs
@@ -428,7 +427,7 @@ local function taskRow(item)
 	local taskStatus = tostring(item.status or "-")
 	local meta = taskStatus .. " · " .. tostring(item.state)
 	local cells = {
-		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1 }),
+		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1, maxLines = 1 }),
 		ui.label({ text = meta }),
 	}
 	if item.state == "synced" then
@@ -725,7 +724,7 @@ local function noteRow(item)
 	local where = tostring(item.notebook_name or noctalia.tr("ui.panel.unfiled"))
 	local meta = where .. " · " .. tostring(item.state)
 	local cells = {
-		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1 }),
+		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1, maxLines = 1 }),
 		ui.label({ text = meta }),
 	}
 	if item.state == "synced" then
@@ -793,14 +792,17 @@ local function noteRow(item)
 end
 
 local function notesTab()
-	local parts = {}
+	local head = {}
 	if lastResult ~= "" then
-		table.insert(parts, ui.label({ text = lastResult }))
+		table.insert(head, ui.label({ text = lastResult }))
 	end
+	local body = {}
 	if nshowForm then
-		table.insert(parts, nFormTree())
+		table.insert(body, nFormTree())
+	elseif neditingSid ~= nil then
+		table.insert(body, nEditTree())
 	else
-		table.insert(parts, ui.button({
+		table.insert(body, ui.button({
 			text = noctalia.tr("ui.panel.new_note"),
 			enabled = pending == nil,
 			onClick = function()
@@ -808,26 +810,20 @@ local function notesTab()
 				render()
 			end,
 		}))
-	end
-	table.insert(parts, ui.separator({}))
-	if neditingSid ~= nil then
-		table.insert(parts, nEditTree())
-		table.insert(parts, ui.separator({}))
-	end
-	local found = false
-	local itemRows = {}
-	for i = #regItems, 1, -1 do
-		if regItems[i].kind == "note" then
-			found = true
-			table.insert(itemRows, noteRow(regItems[i]))
+		table.insert(body, ui.separator({}))
+		local found = false
+		for i = #regItems, 1, -1 do
+			if regItems[i].kind == "note" then
+				found = true
+				table.insert(body, noteRow(regItems[i]))
+			end
+		end
+		if not found then
+			table.insert(body, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
 		end
 	end
-	if not found then
-		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
-	else
-		table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
-	end
-	return ui.column({ gap = 10 }, parts)
+	table.insert(head, ui.scroll({ flexGrow = 1 }, { ui.column({ gap = 10 }, body) }))
+	return ui.column({ gap = 10 }, head)
 end
 
 local function submitJournal()
@@ -852,10 +848,11 @@ local function submitJournal()
 end
 
 local function journalTab()
-	local parts = {}
+	local head = {}
 	if lastResult ~= "" then
-		table.insert(parts, ui.label({ text = lastResult }))
+		table.insert(head, ui.label({ text = lastResult }))
 	end
+	local parts = {}
 	table.insert(parts, ui.row({ gap = 8 }, {
 		ui.column({ flexGrow = 1 }, {
 			ui.label({ text = noctalia.tr("ui.panel.form.scheduled") }),
@@ -904,7 +901,6 @@ local function journalTab()
 	table.insert(parts, ui.separator({}))
 	table.insert(parts, ui.label({ text = noctalia.tr("ui.journal.no_edit") }))
 	local found = false
-	local itemRows = {}
 	for i = #regItems, 1, -1 do
 		local item = regItems[i]
 		if item.kind == "journal" then
@@ -914,40 +910,45 @@ local function journalTab()
 			if item.excerpt ~= nil then
 				line = line .. " — " .. tostring(item.excerpt):sub(1, 80)
 			end
-			local rows = { ui.label({ key = "jreg-" .. key, text = line }) }
+			local rows = { ui.label({ key = "jreg-" .. key, text = line, maxLines = 2 }) }
 			if item.last_error ~= nil then
 				table.insert(rows, ui.label({ text = tostring(item.last_error) }))
 			end
-			table.insert(itemRows, ui.column({ gap = 2 }, rows))
+			table.insert(parts, ui.column({ gap = 2 }, rows))
 		end
 	end
 	if not found then
 		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
-	else
-		table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
 	end
-	return ui.column({ gap = 10 }, parts)
+	table.insert(head, ui.scroll({ flexGrow = 1 }, { ui.column({ gap = 10 }, parts) }))
+	return ui.column({ gap = 10 }, head)
 end
 
 local function tasksTab()
-	local parts = {}
-	table.insert(parts, ui.row({ gap = 8, align = "center" }, {
-		ui.label({ text = connText, flexGrow = 1 }),
-		ui.button({
-			text = noctalia.tr("ui.panel.ping"),
-			enabled = pending == nil,
-			onClick = function()
-				sendCmd("ping")
-			end,
+	local head = {
+		ui.row({ gap = 8, align = "center" }, {
+			ui.label({ text = connText, flexGrow = 1 }),
+			ui.button({
+				text = noctalia.tr("ui.panel.ping"),
+				enabled = pending == nil,
+				onClick = function()
+					sendCmd("ping")
+				end,
+			}),
 		}),
-	}))
+	}
 	if lastResult ~= "" then
-		table.insert(parts, ui.label({ text = lastResult }))
+		table.insert(head, ui.label({ text = lastResult }))
 	end
+	-- Exclusive body: form, edit, or list. Everything lives in one scroll
+	-- container so content can never bleed past the fixed panel height.
+	local body = {}
 	if showForm then
-		table.insert(parts, formTree())
+		table.insert(body, formTree())
+	elseif editingSid ~= nil then
+		table.insert(body, editTree())
 	else
-		table.insert(parts, ui.button({
+		table.insert(body, ui.button({
 			text = noctalia.tr("ui.panel.new_task"),
 			enabled = pending == nil,
 			onClick = function()
@@ -955,41 +956,20 @@ local function tasksTab()
 				render()
 			end,
 		}))
-	end
-	table.insert(parts, ui.separator({}))
-	if editingSid ~= nil then
-		table.insert(parts, editTree())
-		table.insert(parts, ui.separator({}))
-	end
-	if #regItems == 0 then
-		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
-	else
-		local itemRows = {}
+		table.insert(body, ui.separator({}))
 		local found = false
 		for i = #regItems, 1, -1 do
 			if regItems[i].kind == "task" then
 				found = true
-				table.insert(itemRows, taskRow(regItems[i]))
+				table.insert(body, taskRow(regItems[i]))
 			end
 		end
 		if not found then
-			table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
-		else
-			table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
+			table.insert(body, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
 		end
 	end
-	table.insert(parts, ui.separator({}))
-	table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.diag.select_hint") }))
-	table.insert(parts, ui.select({
-		options = { "alpha", "beta", "gamma" },
-		selectedIndex = 0,
-		onChange = function(v)
-			selectEcho = tostring(v)
-			render()
-		end,
-	}))
-	table.insert(parts, ui.label({ text = "select raw=" .. selectEcho }))
-	return ui.column({ gap = 10 }, parts)
+	table.insert(head, ui.scroll({ flexGrow = 1 }, { ui.column({ gap = 10 }, body) }))
+	return ui.column({ gap = 10 }, head)
 end
 
 render = function()
