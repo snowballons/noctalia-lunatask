@@ -1,3 +1,4 @@
+--!nonstrict
 -- lib/ids.luau (M2)
 -- source_id generation (D7), date helpers. Stock-lua compatible.
 local M = {}

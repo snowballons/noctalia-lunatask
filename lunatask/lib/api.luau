@@ -1,3 +1,4 @@
+--!nonstrict
 -- lib/api.luau (M0)
 -- Thin wrapper around noctalia.http for the Lunatask API.
 -- Base URL: https://api.lunatask.app/v1

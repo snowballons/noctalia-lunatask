@@ -137,6 +137,9 @@ check("corrupt file -> blank, no crash", reg4.schema == 1 and #reg4.items == 0)
 -- ── service protocol tests ───────────────────────────────────────
 files = {} -- reset fs so service starts blank
 local svc = assert(loadfile(PLUGIN_DIR .. "service.luau"))()
+-- Baseline AFTER boot: startup reconcile + chmod already ran.
+http_calls = 0
+max_in_flight = 0
 check("service publishes registry state", state_store["registry"] ~= nil and state_store["registry"].schema == 1)
 check("service watches both senders", watchers["cmd.panel"] ~= nil and watchers["cmd.launcher"] ~= nil)
 

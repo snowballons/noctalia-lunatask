@@ -1,3 +1,4 @@
+--!nonstrict
 -- panel.luau (M5: Tasks + Notes + Journal tabs)
 -- Protocol (§8): one outstanding command; submits stay disabled until the
 -- matching evt.panel arrives.

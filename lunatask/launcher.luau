@@ -1,3 +1,4 @@
+--!nonstrict
 -- launcher.luau (M6): /lt quick capture + registry search.
 -- onQuery never touches the network: it answers from settings + the registry
 -- snapshot. Only onActivate sends a command to the service.

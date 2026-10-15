@@ -1,3 +1,4 @@
+--!nonstrict
 -- service.luau (M5: registry owner + command protocol + tasks + notes + journal)
 -- Owns: token resolution (D3), registry.json (D2/D8), FIFO request queue (D9).
 -- M6 adds the launcher provider.
@@ -1266,6 +1267,12 @@ local function crashReplay()
 end
 
 crashReplay()
+
+-- D9: reconcile once at service start. Missing token or network makes this a
+-- safe no-op (reconcile never mutates unless both lists decode from 2xx).
+reconcile(function(r)
+	noctalia.log("startup refresh ok=" .. tostring(r.ok) .. " orphaned=" .. tostring(r.orphaned or 0))
+end)
 
 -- Seam for the mock harness (host ignores chunk return values).
 return {

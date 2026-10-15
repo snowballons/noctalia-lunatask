@@ -1,3 +1,4 @@
+--!nonstrict
 -- lib/registry.luau (M1)
 -- Local memory of items this plugin created (D2, §7).
 -- Single writer: service.luau. Atomic replace via tmp + rename.
