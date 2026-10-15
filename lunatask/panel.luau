@@ -362,7 +362,10 @@ end
 local function taskRow(item)
 	local key = tostring(item.source_id or item.id or "?")
 	local title = tostring(item.title or item.date_on or "?")
-	local meta = tostring(item.kind) .. " · " .. tostring(item.state)
+	-- Show the Lunatask status (later/next/…/completed) alongside our sync
+	-- state: without it, an app-side completion is invisible in the panel.
+	local taskStatus = tostring(item.status or "-")
+	local meta = taskStatus .. " · " .. tostring(item.state)
 	local cells = {
 		ui.label({ text = glyphFor(item.state) .. " " .. title, flexGrow = 1 }),
 		ui.label({ text = meta }),
@@ -375,13 +378,15 @@ local function taskRow(item)
 				openEdit(item)
 			end,
 		}))
-		table.insert(cells, ui.button({
-			text = noctalia.tr("ui.panel.complete"),
-			enabled = pending == nil,
-			onClick = function()
-				sendCmd("task.update", { id = item.id, changes = { status = "completed" } })
-			end,
-		}))
+		if taskStatus ~= "completed" then
+			table.insert(cells, ui.button({
+				text = noctalia.tr("ui.panel.complete"),
+				enabled = pending == nil,
+				onClick = function()
+					sendCmd("task.update", { id = item.id, changes = { status = "completed" } })
+				end,
+			}))
+		end
 		local deleting = (delArmSid ~= nil and delArmSid == key)
 		local confirm = noctalia.getConfig("confirm_delete")
 		if confirm == false then

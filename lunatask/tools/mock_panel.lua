@@ -263,6 +263,15 @@ check("delete cmd", cmdd.op == "task.delete" and cmdd.args.id == "rid-1")
 safe_call("evt delete ok", fire, "evt.panel", { seq = cmdd.seq, op = "task.delete", ok = true })
 check("deleted notice", has_text(renders[#renders], "ui.panel.deleted"))
 
+-- ── M3: completed status visible, no Complete button ──────────────
+safe_call("completed watch", fire, "registry", { schema = 1, items = {
+	{ kind = "task", id = "rid-2", source_id = "nct-3", state = "synced",
+		title = "Done thing", status = "completed", priority = 0 },
+} })
+tree = renders[#renders]
+check("status shown in row meta", has_text(tree, "completed · synced"))
+check("no Complete button when completed", find_button(tree, "ui.panel.complete") == nil)
+
 -- ── M3: orphan forget + refresh display ──────────────────────────
 safe_call("orphan watch", fire, "registry", { schema = 1, items = {
 	{ kind = "task", id = "rid-9", source_id = "nct-9", state = "orphaned", title = "Gone" },
