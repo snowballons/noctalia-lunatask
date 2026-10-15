@@ -1173,6 +1173,25 @@ function onOpen(_context)
 		regItems = current.items or {}
 	end
 	fStatusIdx = statusDefaultIdx()
+	-- Deep-link from the launcher (M6): open on the matched item.
+	local openItem = noctalia.state.get("open_item")
+	if type(openItem) == "table" and openItem.source_id ~= nil then
+		noctalia.state.set("open_item", nil)
+		for _, it in ipairs(regItems) do
+			if tostring(it.source_id or it.id) == tostring(openItem.source_id) then
+				if it.kind == "task" then
+					tab = "tasks"
+					openEdit(it)
+				elseif it.kind == "note" then
+					tab = "notes"
+					openNEdit(it)
+				else
+					tab = "journal"
+				end
+				break
+			end
+		end
+	end
 	render()
 end
 

@@ -395,6 +395,19 @@ safe_call("click create bad date", find_button(renders[#renders], "ui.panel.crea
 check("bad date sends nothing", state_store["cmd.panel"].seq == seq_before)
 check("bad date error shown", has_text(renders[#renders], "ui.panel.bad_date"))
 
+-- ── M6: launcher deep-link opens on the item ───────────────────────
+state_store["registry"] = { schema = 1, items = {
+	{ kind = "task", id = "rid-9", source_id = "nct-9", state = "synced",
+		title = "Deep link me", status = "later", priority = 0 },
+} }
+state_store["open_item"] = { source_id = "nct-9" }
+panel_open = true
+safe_call("open with deep link", onOpen, "")
+tree = renders[#renders]
+check("edit opened on linked item", find_input(tree, "ui.panel.form.title") ~= nil)
+check("edit prefilled", find_input(tree, "ui.panel.form.title").props.value == "Deep link me")
+check("open_item consumed", state_store["open_item"] == nil)
+
 -- ── protocol hardening: gen stamp, svc restart, pending timeout ────
 state_store["svc_boot"] = 777
 panel_open = true

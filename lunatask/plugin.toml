@@ -110,3 +110,14 @@ placement = "floating"
 position = "center"
 keyboard_focus = "exclusive"
 dismiss_on_outside_click = false
+
+[[launcher_provider]]
+id = "capture"
+entry = "launcher.luau"
+prefix = "lt"
+glyph = "checklist"
+include_in_global_search = false
+
+[[widget]]
+id = "button"
+entry = "widget.luau"
