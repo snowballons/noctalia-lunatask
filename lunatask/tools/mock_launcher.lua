@@ -160,5 +160,31 @@ for _, id in ipairs(row_ids(r2.rows)) do
 end
 check("task row hidden without areas", not saw_task)
 
+-- ── single area, no default: unambiguous fallback ────────────────
+fake_config.areas = { Solo = "11111111-2222-3333-4444-555555555555" }
+fake_config.default_area = ""
+onQuery("milk")
+local r3 = results[#results]
+local solo_row = nil
+for _, r in ipairs(r3.rows) do
+	if r.id == "create-task" then
+		solo_row = r
+	end
+end
+check("single area used without default", solo_row ~= nil)
+check("fallback subtitle", solo_row ~= nil and solo_row.subtitle == "Create task → Solo · next")
+
+-- ── multiple areas, no default: hidden ───────────────────────────
+fake_config.areas = { A = "11111111-2222-3333-4444-555555555555", B = "22222222-3333-4444-5555-666666666666" }
+onQuery("milk")
+local r4 = results[#results]
+local saw_task2 = false
+for _, id in ipairs(row_ids(r4.rows)) do
+	if id == "create-task" then
+		saw_task2 = true
+	end
+end
+check("task row hidden, ambiguous default", not saw_task2)
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

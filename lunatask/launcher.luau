@@ -16,14 +16,34 @@ local function regItems()
 	return {}
 end
 
+local function trimmed(s)
+	if type(s) ~= "string" then
+		return ""
+	end
+	return noctalia.string.trim(s)
+end
+
 local function defaultArea()
 	local areas = noctalia.getConfig("areas")
 	if type(areas) ~= "table" then
 		return nil
 	end
-	local dflt = noctalia.getConfig("default_area")
-	if type(dflt) == "string" and dflt ~= "" and areas[dflt] ~= nil then
-		return dflt
+	local dflt = trimmed(noctalia.getConfig("default_area"))
+	if dflt ~= "" then
+		for name, _ in pairs(areas) do
+			if trimmed(name) == dflt then
+				return name
+			end
+		end
+	end
+	-- A single configured area is unambiguous: use it without demanding
+	-- default_area. Multiple areas with no default stay hidden (ask in Settings).
+	local only, n = nil, 0
+	for name, _ in pairs(areas) do
+		only, n = name, n + 1
+	end
+	if n == 1 then
+		return only
 	end
 	return nil
 end
@@ -33,9 +53,13 @@ local function defaultNotebook()
 	if type(books) ~= "table" then
 		return nil
 	end
-	local dflt = noctalia.getConfig("default_notebook")
-	if type(dflt) == "string" and dflt ~= "" and books[dflt] ~= nil then
-		return dflt
+	local dflt = trimmed(noctalia.getConfig("default_notebook"))
+	if dflt ~= "" then
+		for name, _ in pairs(books) do
+			if trimmed(name) == dflt then
+				return name
+			end
+		end
 	end
 	return nil
 end
