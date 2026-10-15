@@ -21,6 +21,12 @@ local fAreaIdx = 1
 local fStatusIdx = 1
 local fPrioIdx = 3
 local selectEcho = "-"
+local open = false -- true between onOpen and onClose; watchers skip render when closed
+
+-- Forward declaration: every onClick/onChange closure below calls render(),
+-- but render() is defined at the bottom. Without this, those closures would
+-- resolve a (nil) global instead of the local and crash on first click.
+local render
 
 -- Defensive select index: works whether onChange passes a 0- or 1-based
 -- index string (V-04 still open; this helper is correct under either).
@@ -276,7 +282,7 @@ local function tasksTab()
 	return ui.column({ gap = 10 }, parts)
 end
 
-local function render()
+render = function()
 	local tabs = ui.row({ gap = 8 }, {
 		ui.button({
 			text = noctalia.tr("ui.tab.tasks"),
@@ -333,7 +339,9 @@ end
 noctalia.state.watch("registry", function(msg)
 	if type(msg) == "table" then
 		regItems = msg.items or {}
-		render()
+		if open then
+			render()
+		end
 	end
 end)
 
@@ -372,14 +380,24 @@ noctalia.state.watch("evt.panel", function(msg)
 	if msg.ok ~= true and msg.err ~= nil and msg.err.kind ~= nil then
 		noctalia.log("panel cmd " .. tostring(op) .. " failed kind=" .. tostring(msg.err.kind))
 	end
-	render()
+	if open then
+		render()
+	end
 end)
 
 function onOpen(_context)
+	open = true
+	-- Seed from current state: the service publishes the registry long before
+	-- the panel first opens, and watch() only fires on *changes*.
+	local current = noctalia.state.get("registry")
+	if type(current) == "table" then
+		regItems = current.items or {}
+	end
 	fStatusIdx = statusDefaultIdx()
 	render()
 end
 
 function onClose()
+	open = false
 	pending = nil
 end
