@@ -76,12 +76,9 @@ noctalia = {
 -- ── require shim for Noctalia-style relative requires ──────────
 local orig_require = require
 require = function(path)
-	if path == "./lib/api.luau" then
-		local chunk = assert(loadfile(PLUGIN_DIR .. "lib/api.luau"))
-		return chunk()
-	end
-	if path == "./lib/registry.luau" then
-		local chunk = assert(loadfile(PLUGIN_DIR .. "lib/registry.luau"))
+	local rel = path:match("^%./(.+)%.luau$")
+	if rel then
+		local chunk = assert(loadfile(PLUGIN_DIR .. rel .. ".luau"))
 		return chunk()
 	end
 	return orig_require(path)

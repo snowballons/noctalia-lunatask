@@ -75,10 +75,11 @@ function M.findBySourceId(reg, sourceId)
 end
 
 -- Removes locally only ("Forget", or after a confirmed remote delete).
+-- Matches a remote id or, for items that never synced, the source_id.
 -- Returns true when something was removed.
 function M.removeById(reg, id)
 	for i, item in ipairs(reg.items) do
-		if item.id == id then
+		if item.id == id or item.source_id == id then
 			table.remove(reg.items, i)
 			return true
 		end

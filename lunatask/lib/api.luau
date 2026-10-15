@@ -8,6 +8,23 @@ local M = {}
 
 M.BASE = "https://api.lunatask.app/v1"
 
+-- Reconciliation lookup (C6/D7): find items by idempotency pair.
+-- Always resolves { ok, tasks } on transport success, even when empty.
+function M.listTasksBySource(token, sourceTag, sourceId, cb)
+	local q = "/tasks?source=" .. noctalia.string.urlEncode(sourceTag) .. "&source_id=" .. noctalia.string.urlEncode(sourceId)
+	M.request(token, "GET", q, nil, function(r)
+		if r.ok then
+			local tasks = (r.data and r.data.tasks) or {}
+			if type(tasks) ~= "table" then
+				tasks = {}
+			end
+			cb({ ok = true, tasks = tasks })
+		else
+			cb({ ok = false, err = r.err })
+		end
+	end)
+end
+
 -- Map HTTP status to plugin err.kind (spec §11.1).
 -- No 429 / Retry-After is documented, so there is no rate-limit branch.
 function M.classify(status)
