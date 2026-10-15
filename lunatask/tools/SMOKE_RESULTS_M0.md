@@ -23,3 +23,20 @@ remove them in the Lunatask app.
 
 Still open (needs Noctalia-hosted run): V-01 (`res.ok` semantics for non-2xx
 inside `noctalia.http`), V-13 (env inheritance — token_file used instead).
+
+## M2 live panel test (2026-10-15, second test token)
+
+Created "M2 panel test" from the panel (area Test, priority -1,
+scheduled 2026-10-16, with note): registry went `pending_create` → `synced`
+with a real id. Lookup confirmed priority/scheduled_on stored server-side.
+
+| # | Check | Observed |
+|---|---|---|
+| T-05 | Panel create in chosen area | Appears in Test area; registry `synced` |
+| T-06 | Duplicate `source_id` via curl | **204**, lookup count stays **1** — no duplicate |
+| V-15 | Complete via `PUT {status:completed}` | `completed_at` **auto-set**; completed task **still listed** by `GET ?source=&source_id=` |
+| Side obs. | Completing clears `scheduled_on` | After complete, `scheduled_on` became `null` (was 2026-10-16) — M3 reconcile must expect this |
+| V-06 | `GET ?source=` (no `source_id`) | Returns items (used for the count checks above); `nct-…` ids (letters, digits, dashes) accepted without issue |
+
+Cleanup: test task deleted via API (lookup empty). Registry row left
+`s synced` for a deleted remote id — orphan marking arrives in M3.
