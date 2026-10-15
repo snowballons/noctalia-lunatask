@@ -9,10 +9,7 @@ description = "Create, edit and delete Lunatask tasks and notes, and add journal
 tags = ["productivity"]
 dependencies = []
 
-# ───────────── Plugin-level settings (M0: token only) ─────────────
-# Seeded into every entry; read with noctalia.getConfig(key).
-# M1 adds: areas, default_area, notebooks, default_notebook,
-# default_task_status, cache_bodies, confirm_delete, source_tag, max_retries.
+# ───────────── Plugin-level settings (seeded into every entry) ─────────────
 
 [[setting]]
 key = "token"
@@ -28,9 +25,88 @@ label_key = "settings.token_file.label"
 description_key = "settings.token_file.description"
 default = ""
 
-# ───────────── Entries (M0: service only) ─────────────
-# M1 adds panel stub; M6 adds launcher_provider + optional widget.
+[[setting]]
+key = "areas"
+type = "string_map"
+label_key = "settings.areas.label"
+description_key = "settings.areas.description"
+default = {}
+
+[[setting]]
+key = "default_area"
+type = "string"
+label_key = "settings.default_area.label"
+description_key = "settings.default_area.description"
+default = ""
+
+[[setting]]
+key = "notebooks"
+type = "string_map"
+label_key = "settings.notebooks.label"
+description_key = "settings.notebooks.description"
+default = {}
+
+[[setting]]
+key = "default_notebook"
+type = "string"
+label_key = "settings.default_notebook.label"
+description_key = "settings.default_notebook.description"
+default = ""
+
+[[setting]]
+key = "default_task_status"
+type = "select"
+label_key = "settings.default_task_status.label"
+default = "later"
+options = [
+  { value = "later", label_key = "status.later" },
+  { value = "next", label_key = "status.next" },
+  { value = "started", label_key = "status.started" },
+  { value = "waiting", label_key = "status.waiting" },
+]
+
+[[setting]]
+key = "cache_bodies"
+type = "bool"
+label_key = "settings.cache_bodies.label"
+description_key = "settings.cache_bodies.description"
+default = false
+
+[[setting]]
+key = "confirm_delete"
+type = "bool"
+label_key = "settings.confirm_delete.label"
+default = true
+
+[[setting]]
+key = "source_tag"
+type = "string"
+label_key = "settings.source_tag.label"
+description_key = "settings.source_tag.description"
+default = "noctalia"
+advanced = true
+
+[[setting]]
+key = "max_retries"
+type = "int"
+label_key = "settings.max_retries.label"
+default = 1
+min = 0
+max = 3
+advanced = true
+
+# ───────────── Entries ─────────────
 
 [[service]]
 id = "core"
 entry = "service.luau"
+
+[[panel]]
+id = "manager"
+entry = "panel.luau"
+width = 560
+height = 680
+placement = "floating"
+position = "center"
+keyboard_focus = "exclusive"
+dismiss_on_outside_click = false

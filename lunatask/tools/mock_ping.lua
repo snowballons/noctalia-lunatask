@@ -62,9 +62,14 @@ noctalia = {
 	notifyError = function(t, b) print("NOTIFY-ERROR " .. t .. ": " .. tostring(b)) end,
 	tr = function(k) return k end,
 	setUpdateInterval = function(_) end,
+	nowMs = function() return 1792029000000 end,
+	pluginDataDir = function() return "/tmp/lunatask-mock-data" end,
+	writeFile = function(_, _) return true end,
+	renameFile = function(_, _) return true end,
 	state = {
 		set = function(k, v) state_store[k] = v end,
 		get = function(k) return state_store[k] end,
+		watch = function(_, _) end,
 	},
 }
 
@@ -73,6 +78,10 @@ local orig_require = require
 require = function(path)
 	if path == "./lib/api.luau" then
 		local chunk = assert(loadfile(PLUGIN_DIR .. "lib/api.luau"))
+		return chunk()
+	end
+	if path == "./lib/registry.luau" then
+		local chunk = assert(loadfile(PLUGIN_DIR .. "lib/registry.luau"))
 		return chunk()
 	end
 	return orig_require(path)
