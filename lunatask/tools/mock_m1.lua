@@ -80,6 +80,7 @@ noctalia = {
 	notifyError = function(_, _) end,
 	tr = function(k, _) return k end,
 	setUpdateInterval = function(_) end,
+	runAsync = function(_) return true end,
 	nowMs = function() return 1000 end,
 	state = {
 		set = function(k, v) state_store[k] = v end,

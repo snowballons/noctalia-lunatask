@@ -7,6 +7,31 @@ local ids = require("./lib/ids.luau")
 
 noctalia.setUpdateInterval(1000)
 
+-- M7 tuning (overridable in tests via the _seam hook below).
+local WATCHDOG_MS = 30000 -- in-flight deadline; documented http has no timeout (V-10)
+local RETRY_DELAY_MS = 2000
+
+local function currentSourceTag()
+	local tag = noctalia.getConfig("source_tag")
+	if type(tag) ~= "string" or tag == "" then
+		tag = "noctalia"
+	end
+	return tag
+end
+
+local function transientKind(kind)
+	return kind == "network" or kind == "server" or kind == "timeout"
+end
+
+-- M7: owner-only data dir (V-09: defaults are 755, and writeFile has no
+-- permission control). Idempotent; runs on every load including hot-reloads.
+do
+	local dir = noctalia.pluginDataDir()
+	if dir then
+		noctalia.runAsync({ "chmod", "700", dir })
+	end
+end
+
 -- ── registry (single writer: this service) ──────────────────────
 local reg = registry.load()
 
@@ -74,7 +99,10 @@ end
 -- ── command queue (D9: one request in flight, FIFO) ─────────────
 local queue = {}
 local busy = false
-local lastSeq = { panel = 0, launcher = 0 }
+local current = nil -- in-flight job (for the watchdog)
+local lastSeq = { panel = 0, launcher = 0, internal = 0 }
+local autoRetries = {} -- { at, op, args, key } due for automatic retry
+local retryCount = {} -- dedupe key -> automatic attempts used
 
 -- High-water publish: a reloaded sender restarts its counter at 0. It reads
 -- this before sending and jumps ahead, so its first command is accepted
@@ -84,6 +112,32 @@ local function publishSeq()
 end
 
 publishSeq()
+
+-- Automatic retry (M7): transient failures re-drive once the backoff elapses,
+-- reusing the same idempotency key. Never for journal.create (no pair, would
+-- duplicate) and never for non-transient kinds.
+local function maybeAutoRetry(op, args, key, kind)
+	if not transientKind(kind) then
+		return
+	end
+	local maxR = noctalia.getConfig("max_retries")
+	if type(maxR) ~= "number" then
+		maxR = 1
+	end
+	if maxR < 1 then
+		return
+	end
+	local used = retryCount[key] or 0
+	if used >= maxR then
+		return
+	end
+	retryCount[key] = used + 1
+	autoRetries[#autoRetries + 1] = { at = noctalia.nowMs() + RETRY_DELAY_MS, op = op, args = args }
+end
+
+local function clearRetry(key)
+	retryCount[key] = nil
+end
 
 local function reply(sender, seq, op, result)
 	noctalia.state.set("evt." .. sender, {
@@ -105,6 +159,7 @@ local function adoptCreate(item, id)
 	item.state = "synced"
 	item.last_error = nil
 	item.updated_at = ids.utcNow()
+	clearRetry(item.source_id)
 	registry.save(reg)
 	publishRegistry()
 end
@@ -115,6 +170,9 @@ local function failCreate(item, err, done)
 	item.updated_at = ids.utcNow()
 	registry.save(reg)
 	publishRegistry()
+	-- Same source_id: a retry that finds the original already stored adopts
+	-- it via lookup instead of duplicating (D7).
+	maybeAutoRetry("task.retry", { id = item.source_id }, item.source_id, item.last_error)
 	done({ ok = false, err = err })
 end
 
@@ -215,10 +273,7 @@ local function taskCreate(args, done)
 		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
 		return
 	end
-	local sourceTag = noctalia.getConfig("source_tag")
-	if type(sourceTag) ~= "string" or sourceTag == "" then
-		sourceTag = "noctalia"
-	end
+	local sourceTag = currentSourceTag()
 	local cacheBodies = noctalia.getConfig("cache_bodies") == true
 	local sourceId = ids.newSourceId()
 	local now = ids.utcNow()
@@ -274,10 +329,7 @@ local function taskRetry(args, done)
 		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
 		return
 	end
-	local sourceTag = noctalia.getConfig("source_tag")
-	if type(sourceTag) ~= "string" or sourceTag == "" then
-		sourceTag = "noctalia"
-	end
+	local sourceTag = currentSourceTag()
 	item.state = "pending_create"
 	-- Same source_id: a POST for an item that actually exists returns 204,
 	-- and the lookup path adopts it instead of duplicating (D7).
@@ -417,6 +469,7 @@ local function taskUpdate(args, done)
 				item.body = cacheBodies and payload.note or nil
 			end
 			syncTaskFromResponse(item, r.data.task)
+			clearRetry(args.id)
 			registry.save(reg)
 			publishRegistry()
 			done({ ok = true })
@@ -432,6 +485,7 @@ local function taskUpdate(args, done)
 			item.updated_at = ids.utcNow()
 			registry.save(reg)
 			publishRegistry()
+			maybeAutoRetry("task.update", args, args.id, item.last_error)
 			done({ ok = false, err = r.err })
 		end
 	end)
@@ -464,6 +518,7 @@ local function taskDelete(args, done)
 	api.request(token, "DELETE", "/tasks/" .. item.id, nil, function(r)
 		if r.ok or r.status == 404 then
 			-- 404 on delete is success: the goal (gone) is achieved.
+			clearRetry(key)
 			registry.removeById(reg, item.source_id)
 			registry.save(reg)
 			publishRegistry()
@@ -474,6 +529,7 @@ local function taskDelete(args, done)
 			item.updated_at = ids.utcNow()
 			registry.save(reg)
 			publishRegistry()
+			maybeAutoRetry("task.delete", args, key, item.last_error)
 			done({ ok = false, err = r.err })
 		end
 	end)
@@ -515,6 +571,7 @@ local function adoptNote(item, id)
 	item.state = "synced"
 	item.last_error = nil
 	item.updated_at = ids.utcNow()
+	clearRetry(item.source_id)
 	registry.save(reg)
 	publishRegistry()
 end
@@ -525,6 +582,7 @@ local function failNote(item, err, done)
 	item.updated_at = ids.utcNow()
 	registry.save(reg)
 	publishRegistry()
+	maybeAutoRetry("note.retry", { id = item.source_id }, item.source_id, item.last_error)
 	done({ ok = false, err = err })
 end
 
@@ -604,10 +662,7 @@ local function noteCreate(args, done)
 		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
 		return
 	end
-	local sourceTag = noctalia.getConfig("source_tag")
-	if type(sourceTag) ~= "string" or sourceTag == "" then
-		sourceTag = "noctalia"
-	end
+	local sourceTag = currentSourceTag()
 	local cacheBodies = noctalia.getConfig("cache_bodies") == true
 	local sourceId = ids.newSourceId()
 	local now = ids.utcNow()
@@ -658,10 +713,7 @@ local function noteRetry(args, done)
 		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
 		return
 	end
-	local sourceTag = noctalia.getConfig("source_tag")
-	if type(sourceTag) ~= "string" or sourceTag == "" then
-		sourceTag = "noctalia"
-	end
+	local sourceTag = currentSourceTag()
 	item.state = "pending_create"
 	registry.save(reg)
 	publishRegistry()
@@ -754,6 +806,7 @@ local function noteUpdate(args, done)
 			item.state = "synced"
 			item.last_error = nil
 			item.updated_at = ids.utcNow()
+			clearRetry(args.id)
 			registry.save(reg)
 			publishRegistry()
 			done({ ok = true })
@@ -769,6 +822,7 @@ local function noteUpdate(args, done)
 			item.updated_at = ids.utcNow()
 			registry.save(reg)
 			publishRegistry()
+			maybeAutoRetry("note.update", args, args.id, item.last_error)
 			done({ ok = false, err = r.err })
 		end
 	end)
@@ -797,6 +851,7 @@ local function noteDelete(args, done)
 	publishRegistry()
 	api.request(token, "DELETE", "/notes/" .. item.id, nil, function(r)
 		if r.ok or r.status == 404 then
+			clearRetry(args and args.id)
 			registry.removeById(reg, item.source_id)
 			registry.save(reg)
 			publishRegistry()
@@ -807,6 +862,7 @@ local function noteDelete(args, done)
 			item.updated_at = ids.utcNow()
 			registry.save(reg)
 			publishRegistry()
+			maybeAutoRetry("note.delete", args, args and args.id, item.last_error)
 			done({ ok = false, err = r.err })
 		end
 	end)
@@ -901,10 +957,7 @@ local function reconcile(done)
 		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
 		return
 	end
-	local sourceTag = noctalia.getConfig("source_tag")
-	if type(sourceTag) ~= "string" or sourceTag == "" then
-		sourceTag = "noctalia"
-	end
+	local sourceTag = currentSourceTag()
 	api.listTasks(token, sourceTag, function(tr)
 		if not tr.ok then
 			done({ ok = false, err = tr.err })
@@ -1017,34 +1070,68 @@ local function handleOp(op, args, done)
 	end
 end
 
-local function pump()
+local pump -- forward: finishJob completes jobs by pumping the next one
+
+local function finishJob(job, result)
+	if job.settled then
+		return -- late callback after watchdog expiry: ignore
+	end
+	job.settled = true
+	if current == job then
+		current = nil
+	end
+	busy = false
+	reply(job.sender, job.seq, job.op, result)
+	pump()
+end
+
+pump = function()
 	if busy or #queue == 0 then
 		return
 	end
 	busy = true
 	local job = table.remove(queue, 1)
+	job.deadline = noctalia.nowMs() + WATCHDOG_MS
+	current = job
 	job.run(function(result)
-		busy = false
-		reply(job.sender, job.seq, job.op, result)
-		pump()
+		finishJob(job, result)
 	end)
+end
+
+local function enqueueJob(sender, seq, op, args)
+	if seq <= (lastSeq[sender] or 0) then
+		return false
+	end
+	lastSeq[sender] = seq
+	publishSeq()
+	table.insert(queue, {
+		sender = sender,
+		seq = seq,
+		op = op,
+		run = function(done)
+			handleOp(op, args, done)
+		end,
+	})
+	pump()
+	return true
 end
 
 local function enqueue(sender, msg)
 	if type(msg) ~= "table" or type(msg.seq) ~= "number" then
 		return
 	end
-	if msg.seq <= (lastSeq[sender] or 0) then
-		return
-	end
-	lastSeq[sender] = msg.seq
-	publishSeq()
+	enqueueJob(sender, msg.seq, msg.op, msg.args)
+end
+
+-- Internal jobs (auto-retry, crash replay): own sender key, never collide.
+local function enqueueInternal(op, args)
+	lastSeq.internal = (lastSeq.internal or 0) + 1
 	table.insert(queue, {
-		sender = sender,
-		seq = msg.seq,
-		op = msg.op,
+		sender = "internal",
+		seq = lastSeq.internal,
+		op = op,
 		run = function(done)
-			handleOp(msg.op, msg.args, done)
+			handleOp(op, args, done)
 		end,
 	})
 	pump()
@@ -1057,8 +1144,21 @@ noctalia.state.watch("cmd.launcher", function(msg)
 	enqueue("launcher", msg)
 end)
 
--- Watchdog tick. M1: nothing to expire yet; M7 drives retry timers here.
+-- Watchdog tick (M7): expire dead requests, fire due auto-retries.
 function update()
+	local now = noctalia.nowMs()
+	if busy and current ~= nil and now > current.deadline then
+		-- The timed-out completion flows through the op's normal done path
+		-- (failed item + lookup-first recovery where applicable); a real
+		-- response arriving later hits settled and is ignored.
+		finishJob(current, { ok = false, err = { kind = "timeout", status = 0, message = "deadline" } })
+	end
+	for i = #autoRetries, 1, -1 do
+		if autoRetries[i].at <= now then
+			local r = table.remove(autoRetries, i)
+			enqueueInternal(r.op, r.args)
+		end
+	end
 end
 
 -- Test hooks (singleton service => address with the `all` target):
@@ -1101,6 +1201,72 @@ function onExit(_signal, _reason)
 	noctalia.log("lunatask service exiting")
 end
 
+-- Crash replay (M7): items stranded in pending_* by a kill or crash.
+-- pending_create (task/note): lookup by source_id first — adopt, never
+-- duplicate. pending_update: the payload is gone, mark failed for manual
+-- retry. pending_delete: re-drive once (idempotent; 404 counts as success).
+-- Journal pendings: no lookup exists, mark failed. Replay failures stay
+-- failed without auto-retry (no boot storms); the user retries explicitly.
+local function failSilent(item, kind)
+	item.state = "failed"
+	item.last_error = kind or "interrupted"
+	item.updated_at = ids.utcNow()
+	registry.save(reg)
+	publishRegistry()
+end
+
+local function crashReplay()
+	local token = resolveToken()
+	if not token then
+		return
+	end
+	local tag = currentSourceTag()
+	local pending = {}
+	for _, item in ipairs(reg.items) do
+		if item.state == "pending_create" or item.state == "pending_update" or item.state == "pending_delete" then
+			pending[#pending + 1] = item
+		end
+	end
+	for _, item in ipairs(pending) do
+		if item.kind == "journal" then
+			failSilent(item)
+		elseif item.state == "pending_create" and item.source_id ~= nil
+			and (item.kind == "task" or item.kind == "note") then
+			local sid = item.source_id
+			if item.kind == "task" then
+				api.listTasksBySource(token, tag, sid, function(l)
+					local t = l.ok and l.tasks and l.tasks[1]
+					if t and t.id then
+						adoptCreate(item, t.id)
+					else
+						failSilent(item)
+					end
+				end)
+			else
+				api.listNotesBySource(token, tag, sid, function(l)
+					local n = l.ok and l.notes and l.notes[1]
+					if n and n.id then
+						adoptNote(item, n.id)
+					else
+						failSilent(item)
+					end
+				end)
+			end
+		elseif item.state == "pending_delete" and item.id ~= nil
+			and (item.kind == "task" or item.kind == "note") then
+			if item.kind == "task" then
+				enqueueInternal("task.delete", { id = item.id })
+			else
+				enqueueInternal("note.delete", { id = item.id })
+			end
+		else
+			failSilent(item)
+		end
+	end
+end
+
+crashReplay()
+
 -- Seam for the mock harness (host ignores chunk return values).
 return {
 	resolveToken = resolveToken,
@@ -1108,4 +1274,12 @@ return {
 	handleOp = handleOp,
 	enqueue = enqueue,
 	_registry = reg,
+	_seam = {
+		setWatchdogMs = function(ms)
+			WATCHDOG_MS = ms
+		end,
+		setRetryDelayMs = function(ms)
+			RETRY_DELAY_MS = ms
+		end,
+	},
 }

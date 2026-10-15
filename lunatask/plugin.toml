@@ -1,13 +1,13 @@
 id = "snowballons/lunatask"
 name = "Lunatask"
 version = "0.1.0"
-plugin_api = 22
+plugin_api   = 24                       # argv runAsync for data-dir hardening (M7)
 author = "snowballons"
 license = "MIT"
 icon = "checklist"
 description = "Create, edit and delete Lunatask tasks and notes, and add journal entries, from Noctalia."
 tags = ["productivity"]
-dependencies = []
+dependencies = ["chmod"]               # M7: owner-only data dir via argv runAsync
 
 # ───────────── Plugin-level settings (seeded into every entry) ─────────────
 

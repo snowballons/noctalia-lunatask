@@ -62,6 +62,7 @@ noctalia = {
 	notifyError = function(t, b) print("NOTIFY-ERROR " .. t .. ": " .. tostring(b)) end,
 	tr = function(k) return k end,
 	setUpdateInterval = function(_) end,
+	runAsync = function(_) return true end,
 	nowMs = function() return 1792029000000 end,
 	pluginDataDir = function() return "/tmp/lunatask-mock-data" end,
 	writeFile = function(_, _) return true end,
