@@ -1,6 +1,8 @@
--- panel.luau (M2: Tasks tab functional; Notes/Journal stubs for M4/M5)
+-- panel.luau (M5: Tasks + Notes + Journal tabs)
 -- Protocol (§8): one outstanding command; submits stay disabled until the
--- matching evt.panel arrives (V-02).
+-- matching evt.panel arrives.
+
+local ids = require("./lib/ids.luau")
 
 local STATUS_OPTS = { "later", "next", "started", "waiting", "completed" }
 local PRIO_LABELS = { "Lowest (-2)", "Low (-1)", "Normal (0)", "High (1)", "Highest (2)" }
@@ -45,6 +47,11 @@ local neTitle = ""
 local neContent = ""
 local neDate = ""
 local neBookIdx = 1
+local jKey = 0
+local jDate = ids.today()
+local jName = ""
+local jContent = ""
+local jErr = ""
 
 -- Forward declaration: every onClick/onChange closure below calls render(),
 -- but render() is defined at the bottom. Without this, those closures would
@@ -811,6 +818,105 @@ local function notesTab()
 	return ui.column({ gap = 10 }, parts)
 end
 
+local function submitJournal()
+	-- Local pre-check (M5 acceptance): malformed dates never hit the network.
+	if not ids.isDate(jDate) then
+		jErr = noctalia.tr("ui.panel.bad_date")
+		render()
+		return
+	end
+	local content = noctalia.string.trim(jContent)
+	if content == "" then
+		jErr = ""
+		render()
+		return
+	end
+	jErr = ""
+	sendCmd("journal.create", {
+		date_on = jDate,
+		content = jContent,
+		name = (jName ~= "" and jName or nil),
+	})
+end
+
+local function journalTab()
+	local parts = {}
+	if lastResult ~= "" then
+		table.insert(parts, ui.label({ text = lastResult }))
+	end
+	table.insert(parts, ui.row({ gap = 8 }, {
+		ui.column({ flexGrow = 1 }, {
+			ui.label({ text = noctalia.tr("ui.panel.form.scheduled") }),
+			ui.input({
+				key = "jdate" .. tostring(jKey),
+				value = jDate,
+				placeholder = "YYYY-MM-DD",
+				onChange = function(v)
+					jDate = v
+				end,
+			}),
+		}),
+		ui.column({ flexGrow = 2 }, {
+			ui.label({ text = noctalia.tr("ui.panel.form.jname") }),
+			ui.input({
+				key = "jname" .. tostring(jKey),
+				value = jName,
+				onChange = function(v)
+					jName = v
+				end,
+			}),
+		}),
+	}))
+	if jErr ~= "" then
+		table.insert(parts, ui.label({ text = jErr }))
+	end
+	table.insert(parts, ui.input({
+		key = "jcontent" .. tostring(jKey),
+		value = jContent,
+		multiline = true,
+		placeholder = "Markdown",
+		onChange = function(v)
+			jContent = v
+		end,
+	}))
+	table.insert(parts, ui.row({ justify = "end", gap = 8 }, {
+		ui.button({
+			text = noctalia.tr("ui.panel.create"),
+			variant = "primary",
+			enabled = pending == nil,
+			onClick = function()
+				submitJournal()
+			end,
+		}),
+	}))
+	table.insert(parts, ui.separator({}))
+	table.insert(parts, ui.label({ text = noctalia.tr("ui.journal.no_edit") }))
+	local found = false
+	local itemRows = {}
+	for i = #regItems, 1, -1 do
+		local item = regItems[i]
+		if item.kind == "journal" then
+			found = true
+			local key = tostring(item.id or item.date_on or "?") .. "-" .. tostring(i)
+			local line = glyphFor(item.state) .. " " .. tostring(item.date_on or "?")
+			if item.excerpt ~= nil then
+				line = line .. " — " .. tostring(item.excerpt):sub(1, 80)
+			end
+			local rows = { ui.label({ key = "jreg-" .. key, text = line }) }
+			if item.last_error ~= nil then
+				table.insert(rows, ui.label({ text = tostring(item.last_error) }))
+			end
+			table.insert(itemRows, ui.column({ gap = 2 }, rows))
+		end
+	end
+	if not found then
+		table.insert(parts, ui.label({ text = noctalia.tr("ui.panel.registry.empty") }))
+	else
+		table.insert(parts, ui.scroll({ flexGrow = 1 }, itemRows))
+	end
+	return ui.column({ gap = 10 }, parts)
+end
+
 local function tasksTab()
 	local parts = {}
 	table.insert(parts, ui.row({ gap = 8, align = "center" }, {
@@ -907,7 +1013,7 @@ render = function()
 	elseif tab == "notes" then
 		body = notesTab()
 	else
-		body = ui.label({ text = noctalia.tr("ui.panel.journal_stub") })
+		body = journalTab()
 	end
 	panel.render(ui.column({ gap = 10, padding = 12 }, {
 		ui.row({ align = "center", justify = "space_between" }, {
@@ -1018,6 +1124,17 @@ noctalia.state.watch("evt.panel", function(msg)
 		if msg.ok then
 			delArmSid = nil
 			lastResult = noctalia.tr("ui.panel.deleted")
+		else
+			local kind = (msg.err and msg.err.kind) or "?"
+			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })
+		end
+	elseif msg.op == "journal.create" then
+		if msg.ok then
+			jKey = jKey + 1
+			jContent = ""
+			jName = ""
+			jDate = ids.today()
+			lastResult = noctalia.tr("notify.journal_created")
 		else
 			local kind = (msg.err and msg.err.kind) or "?"
 			lastResult = noctalia.tr("ui.panel.status.fail", { kind = kind })

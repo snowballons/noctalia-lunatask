@@ -1,6 +1,6 @@
--- service.luau (M4: registry owner + command protocol + tasks + notes)
+-- service.luau (M5: registry owner + command protocol + tasks + notes + journal)
 -- Owns: token resolution (D3), registry.json (D2/D8), FIFO request queue (D9).
--- M5 adds journal.create. M6 adds the launcher provider.
+-- M6 adds the launcher provider.
 local api = require("./lib/api.luau")
 local registry = require("./lib/registry.luau")
 local ids = require("./lib/ids.luau")
@@ -806,6 +806,70 @@ local function noteDelete(args, done)
 	end)
 end
 
+-- Journal (M5, D10): create-only. No update/delete/list endpoints exist.
+-- No source/source_id pair is documented for journal entries, so unlike
+-- tasks/notes there is no safe lookup recovery: an unknown outcome stays
+-- failed and visible instead of risking a silent duplicate on retry.
+local function journalCreate(args, done)
+	args = args or {}
+	local dateOn = args.date_on
+	if not ids.isDate(dateOn) then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "bad date" } })
+		return
+	end
+	local content = args.content and noctalia.string.trim(tostring(args.content)) or ""
+	if content == "" then
+		done({ ok = false, err = { kind = "validation", status = 0, message = "content required" } })
+		return
+	end
+	local name = args.name and noctalia.string.trim(tostring(args.name)) or nil
+	if name == "" then
+		name = nil
+	end
+	local token = resolveToken()
+	if not token then
+		done({ ok = false, err = { kind = "config", status = 0, message = "no token" } })
+		return
+	end
+	local cacheBodies = noctalia.getConfig("cache_bodies") == true
+	local now = ids.utcNow()
+	local item = {
+		kind = "journal",
+		id = nil,
+		state = "pending_create",
+		date_on = dateOn,
+		excerpt = nil,
+		created_at = now,
+		last_error = nil,
+	}
+	registry.add(reg, item)
+	registry.save(reg)
+	publishRegistry()
+	local payload = { date_on = dateOn, content = content }
+	if name then
+		payload.name = name
+	end
+	api.request(token, "POST", "/journal_entries", payload, function(r)
+		if r.ok and r.data and r.data.journal_entry and r.data.journal_entry.id then
+			item.id = r.data.journal_entry.id
+			item.state = "synced"
+			item.last_error = nil
+			item.excerpt = (cacheBodies and content:sub(1, 200)) or nil
+			item.updated_at = now
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = true })
+		else
+			item.state = "failed"
+			item.last_error = (r.err and r.err.kind) or "server"
+			item.updated_at = ids.utcNow()
+			registry.save(reg)
+			publishRegistry()
+			done({ ok = false, err = r.err or { kind = "server", status = 0 } })
+		end
+	end)
+end
+
 -- Reconciliation (§7.5): refresh metadata from the server, mark items that
 -- vanished elsewhere as orphaned. Never mutates on transport failure, and
 -- never mass-orphans on a suspiciously empty response.
@@ -940,6 +1004,8 @@ local function handleOp(op, args, done)
 		noteUpdate(args, done)
 	elseif op == "note.delete" then
 		noteDelete(args, done)
+	elseif op == "journal.create" then
+		journalCreate(args, done)
 	else
 		done({ ok = false, err = { kind = "validation", status = 0, message = "unknown op" } })
 	end

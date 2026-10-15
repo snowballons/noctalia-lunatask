@@ -58,6 +58,10 @@ noctalia = {
 	openSettings = function() end,
 	setUpdateInterval = function(_) end,
 	nowMs = function() return mock_now end,
+	string = {
+		trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end,
+		urlEncode = function(s) return s end,
+	},
 	state = {
 		set = function(k, v) state_store[k] = v end,
 		get = function(k) return state_store[k] end,
@@ -72,6 +76,15 @@ local function fire(key, msg)
 	for _, fn in ipairs(watchers[key] or {}) do
 		fn(msg)
 	end
+end
+
+local orig_require = require
+require = function(path)
+	local rel = path:match("^%./(.+)%.luau$")
+	if rel then
+		return assert(loadfile(PLUGIN_DIR .. rel .. ".luau"))()
+	end
+	return orig_require(path)
 end
 
 local pass, fail = 0, 0
@@ -216,7 +229,7 @@ check("stale evt ignored (no rerender)", #renders == n_renders)
 safe_call("notes tab", find_button(renders[#renders], "ui.tab.notes").props.onClick)
 check("notes tab functional", find_button(renders[#renders], "ui.panel.new_note") ~= nil)
 safe_call("journal tab", find_button(renders[#renders], "ui.tab.journal").props.onClick)
-check("journal stub", has_text(renders[#renders], "ui.panel.journal_stub"))
+check("journal tab functional", find_button(renders[#renders], "ui.panel.create") ~= nil)
 safe_call("back to tasks", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
 
 -- ── M3: edit flow (diff-only submit) ───────────────────────────────
@@ -353,6 +366,34 @@ safe_call("note retry click", nretry.props.onClick)
 local cmdnr = state_store["cmd.panel"]
 check("note.retry cmd", cmdnr.op == "note.retry" and cmdnr.args.id == "nct-n2")
 safe_call("evt note retry ok", fire, "evt.panel", { seq = cmdnr.seq, op = "note.retry", ok = true })
+
+-- ── M5: journal tab ────────────────────────────────────────────────
+safe_call("journal tab open", find_button(renders[#renders], "ui.tab.journal").props.onClick)
+tree = renders[#renders]
+check("journal no-edit hint", has_text(tree, "ui.journal.no_edit"))
+local jdate = find_input(tree, "YYYY-MM-DD")
+check("date defaults to today", jdate ~= nil and jdate.props.value == os.date("%Y-%m-%d"))
+local jcontent = find_input(tree, "Markdown")
+safe_call("type journal content", jcontent.props.onChange, "dear diary")
+local jcreate = find_button(tree, "ui.panel.create")
+safe_call("click journal create", jcreate.props.onClick)
+local cmdj = state_store["cmd.panel"]
+check("journal.create cmd", cmdj.op == "journal.create" and cmdj.args.date_on == os.date("%Y-%m-%d"))
+safe_call("evt journal ok", fire, "evt.panel", { seq = cmdj.seq, op = "journal.create", ok = true })
+tree = renders[#renders]
+check("journal created notice", has_text(tree, "notify.journal_created"))
+safe_call("journal history watch", fire, "registry", { schema = 1, items = {
+	{ kind = "journal", id = "rj-1", state = "synced", date_on = os.date("%Y-%m-%d") },
+} })
+check("history row shown", has_text(renders[#renders], "● " .. os.date("%Y-%m-%d")))
+
+-- malformed date rejected locally: no command leaves the panel
+safe_call("type bad date", find_input(renders[#renders], "YYYY-MM-DD").props.onChange, "yesterday")
+safe_call("type more content", find_input(renders[#renders], "Markdown").props.onChange, "x")
+local seq_before = cmdj.seq
+safe_call("click create bad date", find_button(renders[#renders], "ui.panel.create").props.onClick)
+check("bad date sends nothing", state_store["cmd.panel"].seq == seq_before)
+check("bad date error shown", has_text(renders[#renders], "ui.panel.bad_date"))
 
 -- ── protocol hardening: gen stamp, svc restart, pending timeout ────
 state_store["svc_boot"] = 777
