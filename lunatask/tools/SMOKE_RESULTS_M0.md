@@ -40,3 +40,12 @@ with a real id. Lookup confirmed priority/scheduled_on stored server-side.
 
 Cleanup: test task deleted via API (lookup empty). Registry row left
 `s synced` for a deleted remote id — orphan marking arrives in M3.
+
+## M7 live checks (2026-10-15)
+
+| # | Check | Observed |
+|---|---|---|
+| V-09 | Data dir permissions | Was `755`; after M7 `chmod` hardening: **`700`** |
+| API 24 | `plugin_api = 24` + `dependencies = ["chmod"]` | Re-enables cleanly on v5.2.1; `lint` 0 errors, 0 warnings |
+| Replay | Staged `pending_create` (`m7-replay-1`) + re-enable | **Adopted** existing id, server count stayed **1** — no duplicate |
+| T-26 | Log/notify audit | All sites emit only ok/status/kind/counts; `err.message` never logged or displayed |
