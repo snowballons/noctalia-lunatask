@@ -446,16 +446,23 @@ local cmdm = state_store["cmd.panel"]
 check("explicit move sends notebook", cmdm.args.changes.notebook == "test")
 safe_call("evt move ok", fire, "evt.panel", { seq = cmdm.seq, op = "note.update", ok = true })
 
--- ── protocol hardening: gen stamp, svc restart, pending timeout ────
+-- ── protocol hardening: seq jump, svc restart, pending timeout ────
+-- Simulate a panel reload (counter back at 0) while the service remembers
+-- more: the first command must jump past the published high-water mark.
 state_store["svc_boot"] = 777
+state_store["svc_seq"] = { panel = 10, launcher = 0 }
+safe_call("panel reload", function()
+	-- A reload destroys the old VM: its watchers die with it.
+	watchers = {}
+	assert(loadfile(PLUGIN_DIR .. "panel.luau"))()
+end)
 panel_open = true
 safe_call("reopen2", onOpen, "")
-safe_call("back to tasks", find_button(renders[#renders], "ui.tab.tasks").props.onClick)
 tree = renders[#renders]
 local pingbtn = find_button(tree, "ui.panel.ping")
 safe_call("click ping", pingbtn.props.onClick)
 local cmdp = state_store["cmd.panel"]
-check("cmd stamped with generation", cmdp.gen == 777)
+check("cmd jumps past accepted high-water", cmdp.seq == 11)
 -- service restarts: new boot, in-flight answer lost -> panel un-sticks
 safe_call("svc reboot watch", fire, "svc_boot", 778)
 local pingbtn2 = find_button(renders[#renders], "ui.panel.ping")

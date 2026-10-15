@@ -92,10 +92,6 @@ noctalia = {
 }
 
 local function fire(key, msg)
-	-- Emulate the current panel: stamp the generation it sees.
-	if (key == "cmd.panel" or key == "cmd.launcher") and type(msg) == "table" and msg.gen == nil then
-		msg.gen = state_store["svc_boot"]
-	end
 	for _, fn in ipairs(watchers[key] or {}) do
 		fn(msg)
 	end
@@ -154,40 +150,54 @@ check("stale seq ignored", http_calls == 1)
 fire("cmd.panel", { seq = 0, op = "ping" }) -- stale: lower seq
 check("lower seq ignored", http_calls == 1)
 
--- generation resync: sender restarted, counter back at 0, unseen generation
-fire("cmd.panel", { seq = 1, op = "ping", gen = -1 })
-check("stale gen resyncs + accepts", http_calls == 2)
-fire("cmd.panel", { seq = 1, op = "ping" }) -- same gen, old seq: rejected
-check("same-gen stale still rejected", http_calls == 2)
+-- sender reload: its counter restarts at 0 while the service remembers more.
+-- the sender jumps via the published high-water mark (svc_seq).
+fire("cmd.panel", { seq = 2, op = "ping" })
+fire("cmd.panel", { seq = 3, op = "ping" })
+check("advanced to 3", http_calls == 3)
+local pseq = 0 -- fresh panel counter after reload
+local function psend(op)
+	local s = state_store["svc_seq"]
+	if type(s) == "table" and type(s.panel) == "number" and s.panel >= pseq then
+		pseq = s.panel
+	end
+	pseq = pseq + 1
+	fire("cmd.panel", { seq = pseq, op = op })
+	return state_store["evt.panel"]
+end
+local ej = psend("ping")
+check("reloaded sender jumps + accepted", ej ~= nil and ej.seq == 4 and ej.ok == true and http_calls == 4)
+fire("cmd.panel", { seq = 2, op = "ping" }) -- raw stale, no jump
+check("raw stale still rejected", http_calls == 4)
 
-fire("cmd.panel", { seq = 2, op = "bogus-op" })
+fire("cmd.panel", { seq = 5, op = "bogus-op" })
 local e2 = state_store["evt.panel"]
-check("unknown op -> validation err", e2 ~= nil and e2.seq == 2 and e2.ok == false)
+check("unknown op -> validation err", e2 ~= nil and e2.seq == 5 and e2.ok == false)
 
-fire("cmd.panel", { seq = 3, op = "registry.forget", args = { id = "ghost" } })
+fire("cmd.panel", { seq = 6, op = "registry.forget", args = { id = "ghost" } })
 local e3 = state_store["evt.panel"]
 check("forget unknown -> not_found", e3 ~= nil and e3.ok == false and e3.err.kind == "not_found")
 
 -- forget a real item
 table.insert(svc._registry.items, { kind = "task", id = "id-9", title = "x", state = "synced" })
-fire("cmd.panel", { seq = 4, op = "registry.forget", args = { id = "id-9" } })
+fire("cmd.panel", { seq = 7, op = "registry.forget", args = { id = "id-9" } })
 local e4 = state_store["evt.panel"]
 check("forget existing -> ok", e4 ~= nil and e4.ok == true)
 check("forget removed + republished", #state_store["registry"].items == 0 and #svc._registry.items == 0)
 
-fire("cmd.panel", { seq = 5, op = "registry.refresh" })
+fire("cmd.panel", { seq = 8, op = "registry.refresh" })
 local e5 = state_store["evt.panel"]
-check("refresh -> ok", e5 ~= nil and e5.seq == 5 and e5.ok == true)
+check("refresh -> ok", e5 ~= nil and e5.seq == 8 and e5.ok == true)
 
 fire("cmd.launcher", { seq = 1, op = "ping" })
 local e6 = state_store["evt.launcher"]
 check("launcher sender roundtrip", e6 ~= nil and e6.seq == 1 and e6.ok == true)
 
 -- FIFO: two rapid commands both answered in order
-fire("cmd.panel", { seq = 6, op = "registry.refresh" })
-fire("cmd.panel", { seq = 7, op = "registry.refresh" })
+fire("cmd.panel", { seq = 9, op = "registry.refresh" })
+fire("cmd.panel", { seq = 10, op = "registry.refresh" })
 local e7 = state_store["evt.panel"]
-check("rapid commands both answered, latest wins", e7 ~= nil and e7.seq == 7 and e7.ok == true)
+check("rapid commands both answered, latest wins", e7 ~= nil and e7.seq == 10 and e7.ok == true)
 
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

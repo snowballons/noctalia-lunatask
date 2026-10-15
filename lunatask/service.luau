@@ -16,12 +16,9 @@ end
 
 publishRegistry()
 
--- Boot generation: entries reload independently (a .luau edit hot-reloads one
--- VM, not the plugin). A reloaded panel restarts its seq counter at 0, which
--- the seq gate below would drop forever. The panel stamps each command with
--- the generation it saw; a mismatch resyncs instead of dropping.
-local bootGen = noctalia.nowMs()
-noctalia.state.set("svc_boot", bootGen)
+-- Restart marker: entries reload independently, so a service restart must
+-- un-stick senders waiting on an answer that died with the old VM.
+noctalia.state.set("svc_boot", noctalia.nowMs())
 
 -- ── token resolution (D3: env -> file -> setting) ───────────────
 local function resolveToken()
@@ -78,6 +75,15 @@ end
 local queue = {}
 local busy = false
 local lastSeq = { panel = 0, launcher = 0 }
+
+-- High-water publish: a reloaded sender restarts its counter at 0. It reads
+-- this before sending and jumps ahead, so its first command is accepted
+-- instead of dropped as a duplicate (§8.3, R7).
+local function publishSeq()
+	noctalia.state.set("svc_seq", { panel = lastSeq.panel or 0, launcher = lastSeq.launcher or 0 })
+end
+
+publishSeq()
 
 local function reply(sender, seq, op, result)
 	noctalia.state.set("evt." .. sender, {
@@ -1028,15 +1034,11 @@ local function enqueue(sender, msg)
 	if type(msg) ~= "table" or type(msg.seq) ~= "number" then
 		return
 	end
-	if msg.gen ~= bootGen then
-		-- Sender restarted (or predates generations): its counter restarted
-		-- too, so resync instead of dropping everything it sends.
-		lastSeq[sender] = 0
-	end
 	if msg.seq <= (lastSeq[sender] or 0) then
 		return
 	end
 	lastSeq[sender] = msg.seq
+	publishSeq()
 	table.insert(queue, {
 		sender = sender,
 		seq = msg.seq,

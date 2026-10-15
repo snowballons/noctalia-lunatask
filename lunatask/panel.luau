@@ -160,12 +160,17 @@ function sendCmd(op, args)
 	if pending ~= nil then
 		return
 	end
+	-- Resync after this entry reloaded: the service publishes the highest seq
+	-- it accepted, so a restarted counter jumps ahead instead of being
+	-- dropped as a duplicate (§8.3, R7).
+	local svcs = noctalia.state.get("svc_seq")
+	if type(svcs) == "table" and type(svcs.panel) == "number" and svcs.panel >= seq then
+		seq = svcs.panel
+	end
 	seq = seq + 1
 	pending = { seq = seq, op = op, since = noctalia.nowMs() }
 	render()
-	-- gen: the service generation seen by this panel (§8.3). Lets the service
-	-- tell a restarted counter (seq back at 0) apart from a duplicate.
-	noctalia.state.set("cmd.panel", { seq = seq, op = op, args = args, gen = noctalia.state.get("svc_boot") })
+	noctalia.state.set("cmd.panel", { seq = seq, op = op, args = args })
 end
 
 local function submitTask()

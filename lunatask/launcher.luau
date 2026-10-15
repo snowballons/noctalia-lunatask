@@ -132,9 +132,14 @@ function onQuery(text)
 end
 
 local function send(op, args)
+	-- Same resync as the panel: jump ahead of the accepted high-water mark.
+	local svcs = noctalia.state.get("svc_seq")
+	if type(svcs) == "table" and type(svcs.launcher) == "number" and svcs.launcher >= seq then
+		seq = svcs.launcher
+	end
 	seq = seq + 1
 	pending[seq] = true
-	noctalia.state.set("cmd.launcher", { seq = seq, op = op, args = args, gen = noctalia.state.get("svc_boot") })
+	noctalia.state.set("cmd.launcher", { seq = seq, op = op, args = args })
 end
 
 function onActivate(id)
